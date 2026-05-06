@@ -3,7 +3,7 @@ using Grasshopper.Kernel;
 using Grasshopper.Kernel.Types;
 using Rhino.Geometry;
 
-namespace HelloRhinoCommon.Runtime;
+namespace RhinoModifiers.Runtime;
 
 internal static class GeometryConversion
 {

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace HelloRhinoCommon.Models;
+namespace RhinoModifiers.Models;
 
 internal sealed class ModifierStackSpec
 {

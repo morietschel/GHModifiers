@@ -1,11 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
-using HelloRhinoCommon.Models;
+using RhinoModifiers.Models;
 using Rhino;
 using Rhino.DocObjects;
 
-namespace HelloRhinoCommon.Runtime;
+namespace RhinoModifiers.Runtime;
 
 internal static class ModifierStackStorage
 {

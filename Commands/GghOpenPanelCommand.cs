@@ -1,7 +1,7 @@
 using Rhino.Commands;
 using Rhino.UI;
 
-namespace HelloRhinoCommon.Commands;
+namespace RhinoModifiers.Commands;
 
 public sealed class GghOpenPanelCommand : Command
 {

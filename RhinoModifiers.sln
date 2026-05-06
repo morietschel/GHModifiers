@@ -2,7 +2,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HelloRhinoCommon", "HelloRhinoCommon.csproj", "{E2DCF999-A770-BBCD-2A5D-532096402BCD}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RhinoModifiers", "RhinoModifiers.csproj", "{E2DCF999-A770-BBCD-2A5D-532096402BCD}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

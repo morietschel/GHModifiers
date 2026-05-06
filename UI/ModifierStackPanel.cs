@@ -6,13 +6,13 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Eto.Drawing;
 using Eto.Forms;
-using HelloRhinoCommon.Models;
+using RhinoModifiers.Models;
 using Rhino;
 using Rhino.Geometry;
 using Rhino.Input;
 using Rhino.UI;
 
-namespace HelloRhinoCommon.UI;
+namespace RhinoModifiers.UI;
 
 [Guid("9D0B9A10-3A8E-46FA-B6C2-4E004A80A29B")]
 public sealed class ModifierStackPanel : Panel
@@ -210,7 +210,8 @@ public sealed class ModifierStackPanel : Panel
             },
         };
 
-        HelloRhinoCommonPlugin.Instance.Engine.StateChanged += OnEngineStateChanged;
+        RhinoModifiersPlugin.Instance.Engine.StateChanged += OnEngineStateChanged;
+        UpdateDefinitionPickerWidth();
         RefreshView();
     }
 
@@ -223,7 +224,7 @@ public sealed class ModifierStackPanel : Panel
     {
         if (disposing)
         {
-            HelloRhinoCommonPlugin.Instance.Engine.StateChanged -= OnEngineStateChanged;
+            RhinoModifiersPlugin.Instance.Engine.StateChanged -= OnEngineStateChanged;
         }
 
         base.Dispose(disposing);
@@ -270,7 +271,7 @@ public sealed class ModifierStackPanel : Panel
     private void OnAddClicked(object? sender, EventArgs e)
     {
         var doc = RhinoDoc.ActiveDoc;
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(doc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(doc);
         if (!state.CanEdit || !state.SelectedObjectId.HasValue || doc is null)
         {
             return;
@@ -299,7 +300,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.RefreshSelectedObject(doc, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.RefreshSelectedObject(doc, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Warning);
             return;
@@ -314,13 +315,13 @@ public sealed class ModifierStackPanel : Panel
     private void OnBakeClicked(object? sender, EventArgs e)
     {
         var doc = RhinoDoc.ActiveDoc;
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(doc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(doc);
         if (!state.CanEdit || !state.SelectedObjectId.HasValue || doc is null)
         {
             return;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.BakeFinalResult(doc, state.SelectedObjectId.Value, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.BakeFinalResult(doc, state.SelectedObjectId.Value, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -348,9 +349,8 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        // Subtract 1 because placeholder is at index 0
-        var definitionIndex = selectedIndex - 1;
-        if (definitionIndex < 0 || definitionIndex >= _definitionChoices.Count)
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        if (!state.CanEdit || !state.SelectedObjectId.HasValue)
         {
             ResetDefinitionPicker();
             return;
@@ -369,7 +369,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void RefreshView()
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
 
         SyncDefinitionChoices(state);
         NormalizeExpandedSteps(state);
@@ -443,7 +443,7 @@ public sealed class ModifierStackPanel : Panel
             return false;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.AddStep(doc, state.SelectedObjectId.Value, path, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.AddStep(doc, state.SelectedObjectId.Value, path, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return false;
@@ -878,7 +878,7 @@ public sealed class ModifierStackPanel : Panel
                 return;
             }
 
-            HelloRhinoCommonPlugin.Instance.Engine.SetStepEnabled(
+            RhinoModifiersPlugin.Instance.Engine.SetStepEnabled(
                 doc,
                 objectId,
                 step.Index,
@@ -1522,7 +1522,7 @@ public sealed class ModifierStackPanel : Panel
             }
 
             var serializedValue = SerializePoint(point);
-            if (!HelloRhinoCommonPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, serializedValue, out var message))
+            if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, serializedValue, out var message))
             {
                 MessageBox.Show(message, MessageBoxType.Error);
                 return;
@@ -1565,7 +1565,7 @@ public sealed class ModifierStackPanel : Panel
                 }
 
                 var ids = string.Join(" ", objRefs.Select(r => r.ObjectId.ToString()));
-                if (!HelloRhinoCommonPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, ids, out var message))
+                if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, ids, out var message))
                 {
                     MessageBox.Show(message, MessageBoxType.Error);
                     return;
@@ -1830,7 +1830,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.SetStepInputValue(doc, objectId, stepIndex, input.Id, value, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, stepIndex, input.Id, value, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1850,7 +1850,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.SetStepInputLink(doc, objectId, stepIndex, inputId, option.SourceStepId, option.SourceOutputId, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputLink(doc, objectId, stepIndex, inputId, option.SourceStepId, option.SourceOutputId, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1877,7 +1877,7 @@ public sealed class ModifierStackPanel : Panel
                 return;
             }
 
-            if (!HelloRhinoCommonPlugin.Instance.Engine.SetStepInputObjectPreviewLink(doc, objectId, stepIndex, input.Id, input.ModifiedGeometrySourceObjectId.Value, out var message))
+            if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputObjectPreviewLink(doc, objectId, stepIndex, input.Id, input.ModifiedGeometrySourceObjectId.Value, out var message))
             {
                 MessageBox.Show(message, MessageBoxType.Error);
                 return;
@@ -1902,7 +1902,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.ClearStepInputLink(doc, objectId, stepIndex, inputId, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.ClearStepInputLink(doc, objectId, stepIndex, inputId, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1922,7 +1922,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        HelloRhinoCommonPlugin.Instance.Engine.RemoveStep(doc, objectId, index, out var message);
+        RhinoModifiersPlugin.Instance.Engine.RemoveStep(doc, objectId, index, out var message);
         if (!string.IsNullOrWhiteSpace(message))
         {
             RhinoApp.WriteLine(message);
@@ -1937,7 +1937,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        HelloRhinoCommonPlugin.Instance.Engine.MoveStep(doc, objectId, index, offset, out var message);
+        RhinoModifiersPlugin.Instance.Engine.MoveStep(doc, objectId, index, offset, out var message);
         if (!string.IsNullOrWhiteSpace(message))
         {
             RhinoApp.WriteLine(message);
@@ -1969,7 +1969,7 @@ public sealed class ModifierStackPanel : Panel
             }
         }
 
-        if (!HelloRhinoCommonPlugin.Instance.Engine.ApplyThroughStep(doc, objectId, stepIndex, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.ApplyThroughStep(doc, objectId, stepIndex, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1983,7 +1983,7 @@ public sealed class ModifierStackPanel : Panel
 
     private static void EditStepDefinition(string path)
     {
-        if (!HelloRhinoCommonPlugin.Instance.Engine.OpenModifierDefinitionInGrasshopper(path, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.OpenModifierDefinitionInGrasshopper(path, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;

@@ -1,11 +1,11 @@
-﻿using System;
-using HelloRhinoCommon.Runtime;
-using HelloRhinoCommon.UI;
+using System;
+using RhinoModifiers.Runtime;
+using RhinoModifiers.UI;
 using Rhino;
 using Rhino.PlugIns;
 using Rhino.UI;
 
-namespace HelloRhinoCommon
+namespace RhinoModifiers
 {
     ///<summary>
     /// <para>Every RhinoCommon .rhp assembly must have one and only one PlugIn-derived
@@ -15,17 +15,17 @@ namespace HelloRhinoCommon
     /// attributes in AssemblyInfo.cs (you might need to click "Project" ->
     /// "Show All Files" to see it in the "Solution Explorer" window).</para>
     ///</summary>
-    public class HelloRhinoCommonPlugin : PlugIn
+    public class RhinoModifiersPlugin : PlugIn
     {
         private bool _openedPropertiesOnStartup;
 
-        public HelloRhinoCommonPlugin()
+        public RhinoModifiersPlugin()
         {
             Instance = this;
         }
         
-        ///<summary>Gets the only instance of the HelloRhinoCommonPlugin plug-in.</summary>
-        public static HelloRhinoCommonPlugin Instance { get; private set; } = null!;
+        ///<summary>Gets the only instance of the RhinoModifiersPlugin plug-in.</summary>
+        public static RhinoModifiersPlugin Instance { get; private set; } = null!;
 
         public override PlugInLoadTime LoadTime => PlugInLoadTime.AtStartup;
 

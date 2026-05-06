@@ -10,7 +10,7 @@
         "-f",
         "net7.0",
         "-clp:NoSummary",
-        "${workspaceFolder}/HelloRhinoCommon.csproj"
+        "${workspaceFolder}/RhinoModifiers.csproj"
       ],
       "problemMatcher": "$msCompile",
       "presentation": {
@@ -28,7 +28,7 @@
         "-f",
         "net48",
         "-clp:NoSummary",
-        "${workspaceFolder}/HelloRhinoCommon.csproj"
+        "${workspaceFolder}/RhinoModifiers.csproj"
       ],
       "problemMatcher": "$msCompile",
       "presentation": {
@@ -45,7 +45,7 @@
         "build",
         "-c:Release",
         "-clp:NoSummary",
-        "${workspaceFolder}/HelloRhinoCommon.csproj"
+        "${workspaceFolder}/RhinoModifiers.csproj"
       ],
       "problemMatcher": "$msCompile",
       "presentation": {

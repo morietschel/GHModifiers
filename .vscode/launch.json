@@ -6,7 +6,6 @@
       "type": "coreclr",
       "request": "launch",
       "preLaunchTask": "build netcore",
-      "program": "",
       "osx": {
         "program": "/Applications/Rhino 8.app/Contents/MacOS/Rhinoceros",
         "args": []

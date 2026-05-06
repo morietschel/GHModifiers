@@ -3,7 +3,7 @@ using Eto.Forms;
 using Rhino;
 using Rhino.UI;
 
-namespace HelloRhinoCommon.UI;
+namespace RhinoModifiers.UI;
 
 public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
 {
@@ -12,7 +12,7 @@ public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
 
     public override string EnglishPageTitle => "GGH Stack";
 
-    public override string PageIconEmbeddedResourceString => "HelloRhinoCommon.Logo_3.ico";
+    public override string PageIconEmbeddedResourceString => "RhinoModifiers.Logo_3.ico";
 
     public override int Index => int.MaxValue;
 

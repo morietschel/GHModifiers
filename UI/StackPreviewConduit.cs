@@ -5,14 +5,14 @@ using Rhino.Display;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace HelloRhinoCommon.UI;
+namespace RhinoModifiers.UI;
 
 internal sealed class StackPreviewConduit : DisplayConduit
 {
     private static readonly Color PreviewColor = Color.OrangeRed;
-    private readonly HelloRhinoCommon.Runtime.ModifierEngine _engine;
+    private readonly RhinoModifiers.Runtime.ModifierEngine _engine;
 
-    public StackPreviewConduit(HelloRhinoCommon.Runtime.ModifierEngine engine)
+    public StackPreviewConduit(RhinoModifiers.Runtime.ModifierEngine engine)
     {
         _engine = engine;
     }
@@ -72,7 +72,7 @@ internal sealed class StackPreviewConduit : DisplayConduit
     private static void DrawSourceWireframe(DisplayPipeline display, RhinoObject? sourceObject, Color drawColor)
     {
         if (sourceObject is null ||
-            !HelloRhinoCommon.Runtime.GeometryConversion.TryGetSourceGeometry(sourceObject.Geometry, out var geometry, out _))
+            !RhinoModifiers.Runtime.GeometryConversion.TryGetSourceGeometry(sourceObject.Geometry, out var geometry, out _))
         {
             return;
         }

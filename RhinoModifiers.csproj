@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net7.0;net48</TargetFrameworks>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <UseSystemDrawing>true</UseSystemDrawing>
+    <TargetExt>.rhp</TargetExt>
+    <NoWarn>NU1701</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Version>1.0</Version>
+    <Title>Rhino Modifiers</Title>
+    <Company>Dan Kenerson, Moritz Rietschel, Chuck Driesler, Joshua Foxley</Company>
+    <Description>Adds Blender-like modifiers to Rhino</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Logo_1.svg" />
+    <EmbeddedResource Include="Logo_2.ico" />
+    <EmbeddedResource Include="Logo_3.ico" />
+
+    <PackageReference Include="RhinoCommon" Version="8.0.23304.9001" ExcludeAssets="runtime" />
+    <PackageReference Include="Grasshopper" Version="8.0.23304.9001" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Text.Json" Version="7.0.3" />
+  </ItemGroup>
+
+</Project>

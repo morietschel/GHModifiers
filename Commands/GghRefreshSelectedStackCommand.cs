@@ -1,7 +1,7 @@
 using Rhino;
 using Rhino.Commands;
 
-namespace HelloRhinoCommon.Commands;
+namespace RhinoModifiers.Commands;
 
 public sealed class GghRefreshSelectedStackCommand : Command
 {
@@ -10,7 +10,7 @@ public sealed class GghRefreshSelectedStackCommand : Command
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         RhinoApp.WriteLine("GGH: Manual refresh requested for selected stack.");
-        if (!HelloRhinoCommonPlugin.Instance.Engine.RefreshSelectedObject(doc, out var message))
+        if (!RhinoModifiersPlugin.Instance.Engine.RefreshSelectedObject(doc, out var message))
         {
             if (!string.IsNullOrWhiteSpace(message))
             {

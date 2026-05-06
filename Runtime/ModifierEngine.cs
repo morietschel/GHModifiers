@@ -13,13 +13,13 @@ using Grasshopper.Kernel.Data;
 using Grasshopper.Kernel.Parameters;
 using Grasshopper.Kernel.Special;
 using Grasshopper.Kernel.Types;
-using HelloRhinoCommon.Models;
-using HelloRhinoCommon.UI;
+using RhinoModifiers.Models;
+using RhinoModifiers.UI;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 
-namespace HelloRhinoCommon.Runtime;
+namespace RhinoModifiers.Runtime;
 
 internal sealed class ModifierEngine : IDisposable
 {
