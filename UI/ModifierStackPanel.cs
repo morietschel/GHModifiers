@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using Eto.Drawing;
 using Eto.Forms;
 using RhinoModifiers.Models;
+using RhinoModifiers.Runtime;
 using Rhino;
 using Rhino.Geometry;
 using Rhino.Input;
@@ -46,6 +47,7 @@ public sealed class ModifierStackPanel : Panel
     private readonly List<DefinitionChoice> _definitionChoices = new();
     private readonly HashSet<string> _expandedStepKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> _selectedStepKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _collapsedSectionKeys = new(StringComparer.Ordinal);
     private string? _lastPrimarySelectedStepKey;
 
     private bool _isUpdatingDefinitionPicker;
@@ -211,7 +213,6 @@ public sealed class ModifierStackPanel : Panel
         };
 
         RhinoModifiersPlugin.Instance.Engine.StateChanged += OnEngineStateChanged;
-        UpdateDefinitionPickerWidth();
         RefreshView();
     }
 
@@ -240,6 +241,18 @@ public sealed class ModifierStackPanel : Panel
         try
         {
             var assembly = typeof(Rhino.UI.RhinoEtoApp).Assembly;
+
+            if (resourceName.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+            {
+                var svg = Rhino.UI.ImageResources.SvgFromResourceId(resourceName, assembly);
+                if (!string.IsNullOrEmpty(svg))
+                {
+                    return Rhino.UI.ImageResources.CreateEtoBitmap(svg, IconButtonSize, IconButtonSize, true);
+                }
+
+                return null;
+            }
+
             var stream = assembly.GetManifestResourceStream(resourceName);
             if (stream is null)
             {
@@ -349,14 +362,15 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
-        if (!state.CanEdit || !state.SelectedObjectId.HasValue)
+        // Subtract 1 because placeholder is at index 0
+        var definitionIndex = selectedIndex - 1;
+        if (definitionIndex < 0 || definitionIndex >= _definitionChoices.Count)
         {
             ResetDefinitionPicker();
             return;
         }
 
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         if (!state.CanEdit || !state.SelectedObjectId.HasValue)
         {
             ResetDefinitionPicker();
@@ -374,6 +388,7 @@ public sealed class ModifierStackPanel : Panel
         SyncDefinitionChoices(state);
         NormalizeExpandedSteps(state);
         NormalizeSelectedSteps(state);
+        NormalizeCollapsedSections(state);
 
         var canEdit = state.CanEdit && state.SelectedObjectId.HasValue;
         var canRefresh = canEdit && state.Steps.Count > 0;
@@ -503,7 +518,7 @@ public sealed class ModifierStackPanel : Panel
         {
             foreach (var rhinoObject in doc.Objects)
             {
-                var spec = HelloRhinoCommon.Runtime.ModifierStackStorage.Load(rhinoObject);
+                var spec = ModifierStackStorage.Load(rhinoObject);
                 foreach (var path in spec.Steps
                              .Select(step => step.Path)
                              .Where(path => !string.IsNullOrWhiteSpace(path)))
@@ -626,7 +641,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void SelectStep(ModifierStepPanelState step, bool additive, bool range)
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         var stepKey = GetStepKey(step);
 
         if (range)
@@ -729,17 +744,37 @@ public sealed class ModifierStackPanel : Panel
 
     private static string GetDisclosureGlyph(bool isExpanded)
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return isExpanded ? "˅" : "›";
-        }
-
-        return isExpanded ? "⌄" : "›";
+        return isExpanded ? "v" : ">";
     }
 
     private bool IsStepExpanded(ModifierStepPanelState step)
     {
         return _expandedStepKeys.Contains(GetStepKey(step));
+    }
+
+    private static string GetSectionKey(ModifierStepPanelState step, string sectionName)
+    {
+        return $"{GetStepKey(step)}:{sectionName}";
+    }
+
+    private bool IsSectionExpanded(ModifierStepPanelState step, string sectionName)
+    {
+        return !_collapsedSectionKeys.Contains(GetSectionKey(step, sectionName));
+    }
+
+    private void ToggleSectionExpanded(ModifierStepPanelState step, string sectionName)
+    {
+        var key = GetSectionKey(step, sectionName);
+        if (_collapsedSectionKeys.Contains(key))
+        {
+            _collapsedSectionKeys.Remove(key);
+        }
+        else
+        {
+            _collapsedSectionKeys.Add(key);
+        }
+
+        RefreshView();
     }
 
     private void ToggleExpanded(ModifierStepPanelState step)
@@ -756,6 +791,55 @@ public sealed class ModifierStackPanel : Panel
         }
 
         RefreshView();
+    }
+
+    private void NormalizeCollapsedSections(ModifierPanelState state)
+    {
+        var validKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var step in state.Steps)
+        {
+            if (step.Inputs.Count > 0)
+            {
+                validKeys.Add(GetSectionKey(step, "inputs"));
+            }
+
+            if (step.Outputs.Count > 0)
+            {
+                validKeys.Add(GetSectionKey(step, "outputs"));
+            }
+        }
+
+        _collapsedSectionKeys.RemoveWhere(key => !validKeys.Contains(key));
+    }
+
+    private Control CreateSectionHeader(string title, bool isExpanded, Action toggle)
+    {
+        var disclosureButton = new Button
+        {
+            Text = GetDisclosureGlyph(isExpanded),
+            ToolTip = isExpanded ? "Collapse" : "Expand",
+            Font = new Font(SystemFont.Default, DisclosureGlyphFontSize),
+            Width = 24,
+            Height = 20,
+        };
+        disclosureButton.Click += (_, _) => toggle();
+
+        return new StackLayout
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Items =
+            {
+                disclosureButton,
+                new StackLayoutItem(new Label
+                {
+                    Text = title,
+                    TextAlignment = TextAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center,
+                }, true),
+            },
+        };
     }
 
     private Control CreateStepRow(Guid objectId, ModifierStepPanelState step)
@@ -778,7 +862,7 @@ public sealed class ModifierStackPanel : Panel
             ToolTip = isExpanded ? "Collapse" : "Expand",
             Font = new Font(SystemFont.Default, DisclosureGlyphFontSize),
             Width = 28,
-            Height = 16,
+            Height = 20,
         };
         disclosureButton.Click += (_, _) => ToggleExpanded(step);
 
@@ -847,14 +931,49 @@ public sealed class ModifierStackPanel : Panel
                 Padding = new Padding(StepDetailIndent, 6, 0, 6),
             };
 
-            foreach (var input in step.Inputs)
+            if (step.Inputs.Count > 0)
             {
-                childContent.Items.Add(new StackLayoutItem(CreateInputRow(objectId, step, input), HorizontalAlignment.Stretch));
+                var inputsExpanded = IsSectionExpanded(step, "inputs");
+                childContent.Items.Add(new StackLayoutItem(
+                    CreateSectionHeader("Inputs", inputsExpanded, () => ToggleSectionExpanded(step, "inputs")),
+                    HorizontalAlignment.Stretch));
+
+                if (inputsExpanded)
+                {
+                    var inputsContent = new StackLayout
+                    {
+                        Orientation = Orientation.Vertical,
+                        Spacing = StepDetailSpacing,
+                        Padding = new Padding(20, 0, 0, 0),
+                    };
+
+                    foreach (var input in step.Inputs)
+                    {
+                        inputsContent.Items.Add(new StackLayoutItem(CreateInputRow(objectId, step, input), HorizontalAlignment.Stretch));
+                    }
+
+                    childContent.Items.Add(new StackLayoutItem(inputsContent, HorizontalAlignment.Stretch));
+                }
             }
 
             if (step.Outputs.Count > 0)
             {
-                childContent.Items.Add(new StackLayoutItem(CreateOutputSummaryRow(step.Outputs), HorizontalAlignment.Stretch));
+                var outputsExpanded = IsSectionExpanded(step, "outputs");
+                childContent.Items.Add(new StackLayoutItem(
+                    CreateSectionHeader("Outputs", outputsExpanded, () => ToggleSectionExpanded(step, "outputs")),
+                    HorizontalAlignment.Stretch));
+
+                if (outputsExpanded)
+                {
+                    var outputsContent = new StackLayout
+                    {
+                        Orientation = Orientation.Vertical,
+                        Spacing = 0,
+                        Padding = new Padding(20, 0, 0, 0),
+                    };
+                    outputsContent.Items.Add(new StackLayoutItem(CreateOutputSummaryRow(step.Outputs), HorizontalAlignment.Stretch));
+                    childContent.Items.Add(new StackLayoutItem(outputsContent, HorizontalAlignment.Stretch));
+                }
             }
 
             container.Items.Add(new StackLayoutItem(childContent, HorizontalAlignment.Stretch));
@@ -909,7 +1028,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void OnEditSelectedClicked(object? sender, EventArgs e)
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         foreach (var step in GetSelectedSteps(state))
         {
             if (!string.IsNullOrWhiteSpace(step.FullPath))
@@ -921,7 +1040,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void OnApplySelectedClicked(object? sender, EventArgs e)
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         var selectedSteps = GetSelectedSteps(state);
         if (!state.SelectedObjectId.HasValue || selectedSteps.Count != 1)
         {
@@ -933,7 +1052,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void OnDeleteSelectedClicked(object? sender, EventArgs e)
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         if (!state.SelectedObjectId.HasValue)
         {
             return;
@@ -954,7 +1073,7 @@ public sealed class ModifierStackPanel : Panel
 
     private void MoveSelectedSteps(int offset)
     {
-        var state = HelloRhinoCommonPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         if (!state.SelectedObjectId.HasValue || offset == 0)
         {
             return;
@@ -1147,14 +1266,14 @@ public sealed class ModifierStackPanel : Panel
 
         linkButton.Click += (_, _) =>
         {
-            var menu = BuildInputLinkMenu(objectId, step, input);
+            var menu = ModifierStackPanel.BuildInputLinkMenu(objectId, step, input);
             menu.Show(linkButton);
         };
 
         return linkButton;
     }
 
-    private ContextMenu BuildInputLinkMenu(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static ContextMenu BuildInputLinkMenu(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
     {
         var menu = new ContextMenu();
 
@@ -1983,7 +2102,7 @@ public sealed class ModifierStackPanel : Panel
 
     private static void EditStepDefinition(string path)
     {
-        if (!RhinoModifiersPlugin.Instance.Engine.OpenModifierDefinitionInGrasshopper(path, out var message))
+        if (!Runtime.ModifierEngine.OpenModifierDefinitionInGrasshopper(path, out var message))
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
