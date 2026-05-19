@@ -1,18 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
-using RhinoModifiers.Models;
 using Rhino;
 using Rhino.DocObjects;
+using RhinoModifiers.Models;
 
 namespace RhinoModifiers.Runtime;
 
 internal static class ModifierStackStorage
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = false,
-    };
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
     public static ModifierStackSpec Load(RhinoObject? rhinoObject)
     {
@@ -27,14 +24,19 @@ internal static class ModifierStackStorage
             return new ModifierStackSpec();
         }
 
-        if (dictionary[ModifierStackSpec.UserDictionaryKey] is not string json || string.IsNullOrWhiteSpace(json))
+        if (
+            dictionary[ModifierStackSpec.UserDictionaryKey] is not string json
+            || string.IsNullOrWhiteSpace(json)
+        )
         {
             return new ModifierStackSpec();
         }
 
         try
         {
-            var spec = JsonSerializer.Deserialize<ModifierStackSpec>(json, JsonOptions) ?? new ModifierStackSpec();
+            var spec =
+                JsonSerializer.Deserialize<ModifierStackSpec>(json, JsonOptions)
+                ?? new ModifierStackSpec();
             Normalize(spec);
             return spec;
         }

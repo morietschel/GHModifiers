@@ -20,7 +20,8 @@ namespace RhinoModifiers.Runtime
             IGH_Param? sceneInputParam,
             List<RuntimeInputBinding> inputs,
             List<RuntimeOutputBinding> outputs,
-            List<RuntimeOutputBinding> geometryOutputs)
+            List<RuntimeOutputBinding> geometryOutputs
+        )
         {
             Path = path;
             LastWriteUtc = lastWriteUtc;

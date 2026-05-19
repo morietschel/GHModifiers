@@ -8,7 +8,12 @@ namespace RhinoModifiers.Runtime
     /// </summary>
     internal sealed class DefinitionTemplate : IDisposable
     {
-        public DefinitionTemplate(string path, DateTime lastWriteUtc, GH_Document document, DefinitionContract contract)
+        public DefinitionTemplate(
+            string path,
+            DateTime lastWriteUtc,
+            GH_Document document,
+            DefinitionContract contract
+        )
         {
             Path = path;
             LastWriteUtc = lastWriteUtc;

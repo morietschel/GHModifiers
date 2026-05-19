@@ -6,12 +6,12 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using Eto.Drawing;
 using Eto.Forms;
-using RhinoModifiers.Models;
-using RhinoModifiers.Runtime;
 using Rhino;
 using Rhino.Geometry;
 using Rhino.Input;
 using Rhino.UI;
+using RhinoModifiers.Models;
+using RhinoModifiers.Runtime;
 
 namespace RhinoModifiers.UI;
 
@@ -64,7 +64,12 @@ public sealed class ModifierStackPanel : Panel
         DropDown,
     }
 
-    private readonly record struct NumericSliderConfiguration(double Minimum, double Maximum, int Steps, int DecimalPlaces)
+    private readonly record struct NumericSliderConfiguration(
+        double Minimum,
+        double Maximum,
+        int Steps,
+        int DecimalPlaces
+    )
     {
         public double GetValue(int sliderValue)
         {
@@ -73,7 +78,11 @@ public sealed class ModifierStackPanel : Panel
                 return Minimum;
             }
 
+#if NET48
+            var clampedValue = sliderValue.Clamp(0, Steps);
+#else
             var clampedValue = Math.Clamp(sliderValue, 0, Steps);
+#endif
             var progress = (double)clampedValue / Steps;
             return RoundNumber(Minimum + ((Maximum - Minimum) * progress), DecimalPlaces);
         }
@@ -85,7 +94,11 @@ public sealed class ModifierStackPanel : Panel
                 return 0;
             }
 
+#if NET48
+            var clampedValue = actualValue.Clamp(Minimum, Maximum);
+#else
             var clampedValue = Math.Clamp(actualValue, Minimum, Maximum);
+#endif
             var progress = (clampedValue - Minimum) / (Maximum - Minimum);
             return (int)Math.Round(progress * Steps, MidpointRounding.AwayFromZero);
         }
@@ -108,37 +121,44 @@ public sealed class ModifierStackPanel : Panel
         _addButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.svg.File_Open.svg"),
             "Import modifier from file",
-            OnAddClicked);
+            OnAddClicked
+        );
 
         _refreshButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.Refresh.svg"),
             "Refresh the current modifier stack.",
-            OnRefreshClicked);
+            OnRefreshClicked
+        );
 
         _editSelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.pencil.svg"),
             "Open selected modifier definitions in Grasshopper.",
-            OnEditSelectedClicked);
+            OnEditSelectedClicked
+        );
 
         _moveUpSelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.plugin-sort-up.png"),
             "Move selected modifiers up.",
-            (_, _) => MoveSelectedSteps(-1));
+            (_, _) => MoveSelectedSteps(-1)
+        );
 
         _moveDownSelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.plugin-sort-down.png"),
             "Move selected modifiers down.",
-            (_, _) => MoveSelectedSteps(1));
+            (_, _) => MoveSelectedSteps(1)
+        );
 
         _applySelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.checkmark.png"),
             "Apply selected modifier.",
-            OnApplySelectedClicked);
+            OnApplySelectedClicked
+        );
 
         _deleteSelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.Delete.svg"),
             "Remove selected modifiers.",
-            OnDeleteSelectedClicked);
+            OnDeleteSelectedClicked
+        );
 
         _bakeButton = new Button
         {
@@ -154,18 +174,12 @@ public sealed class ModifierStackPanel : Panel
             Visible = false,
         };
 
-        _rowsScrollable = new Scrollable
-        {
-            ExpandContentWidth = true,
-        };
+        _rowsScrollable = new Scrollable { ExpandContentWidth = true };
 
         var pickerRow = new StackLayout
         {
             Orientation = Orientation.Horizontal,
-            Items =
-            {
-                new StackLayoutItem(_definitionPicker, true),
-            },
+            Items = { new StackLayoutItem(_definitionPicker, true) },
         };
 
         var actionRow = new StackLayout
@@ -189,11 +203,7 @@ public sealed class ModifierStackPanel : Panel
         {
             Orientation = Orientation.Horizontal,
             Spacing = ToolbarSpacing,
-            Items =
-            {
-                _bakeButton,
-                new StackLayoutItem(new Panel(), true),
-            },
+            Items = { _bakeButton, new StackLayoutItem(new Panel(), true) },
         };
 
         Content = new StackLayout
@@ -207,7 +217,10 @@ public sealed class ModifierStackPanel : Panel
                 new StackLayoutItem(actionRow, HorizontalAlignment.Stretch),
                 new StackLayoutItem(pickerRow, HorizontalAlignment.Stretch),
                 _statusLabel,
-                new StackLayoutItem(_rowsScrollable, expand: true) { HorizontalAlignment = HorizontalAlignment.Stretch },
+                new StackLayoutItem(_rowsScrollable, expand: true)
+                {
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                },
                 new StackLayoutItem(footerRow, HorizontalAlignment.Stretch),
             },
         };
@@ -247,7 +260,12 @@ public sealed class ModifierStackPanel : Panel
                 var svg = Rhino.UI.ImageResources.SvgFromResourceId(resourceName, assembly);
                 if (!string.IsNullOrEmpty(svg))
                 {
-                    return Rhino.UI.ImageResources.CreateEtoBitmap(svg, IconButtonSize, IconButtonSize, true);
+                    return Rhino.UI.ImageResources.CreateEtoBitmap(
+                        svg,
+                        IconButtonSize,
+                        IconButtonSize,
+                        true
+                    );
                 }
 
                 return null;
@@ -267,7 +285,11 @@ public sealed class ModifierStackPanel : Panel
         }
     }
 
-    private static Button CreateIconButton(Image? icon, string toolTip, EventHandler<EventArgs> clickHandler)
+    private static Button CreateIconButton(
+        Image? icon,
+        string toolTip,
+        EventHandler<EventArgs> clickHandler
+    )
     {
         var button = new Button
         {
@@ -297,7 +319,10 @@ public sealed class ModifierStackPanel : Panel
         };
         dialog.Filters.Add(new FileFilter("Grasshopper Definitions", ".gh", ".ghx"));
 
-        if (dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok || string.IsNullOrWhiteSpace(dialog.FileName))
+        if (
+            dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok
+            || string.IsNullOrWhiteSpace(dialog.FileName)
+        )
         {
             return;
         }
@@ -334,7 +359,13 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.BakeFinalResult(doc, state.SelectedObjectId.Value, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.BakeFinalResult(
+                doc,
+                state.SelectedObjectId.Value,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -399,9 +430,11 @@ public sealed class ModifierStackPanel : Panel
         _addButton.Enabled = canEdit;
         _refreshButton.Enabled = canRefresh;
         _bakeButton.Enabled = canBake;
-        _editSelectedButton.Enabled = canEdit && selectedSteps.Any(step => !string.IsNullOrWhiteSpace(step.FullPath));
+        _editSelectedButton.Enabled =
+            canEdit && selectedSteps.Any(step => !string.IsNullOrWhiteSpace(step.FullPath));
         _moveUpSelectedButton.Enabled = canEdit && selectedSteps.Any(step => step.Index > 0);
-        _moveDownSelectedButton.Enabled = canEdit && selectedSteps.Any(step => step.Index < state.Steps.Count - 1);
+        _moveDownSelectedButton.Enabled =
+            canEdit && selectedSteps.Any(step => step.Index < state.Steps.Count - 1);
         _applySelectedButton.Enabled = canEdit && selectedSteps.Count == 1;
         _deleteSelectedButton.Enabled = canEdit && selectedSteps.Count > 0;
 
@@ -417,29 +450,51 @@ public sealed class ModifierStackPanel : Panel
 
         if (!state.CanEdit)
         {
-            rows.Items.Add(new StackLayoutItem(CreateCenteredMessage(string.IsNullOrWhiteSpace(state.StatusMessage)
-                ? "Select one object to edit its modifier stack."
-                : state.StatusMessage), HorizontalAlignment.Stretch));
+            rows.Items.Add(
+                new StackLayoutItem(
+                    CreateCenteredMessage(
+                        string.IsNullOrWhiteSpace(state.StatusMessage)
+                            ? "Select one object to edit its modifier stack."
+                            : state.StatusMessage
+                    ),
+                    HorizontalAlignment.Stretch
+                )
+            );
         }
         else if (state.Steps.Count == 0)
         {
-            rows.Items.Add(new StackLayoutItem(CreateCenteredMessage("No modifiers added yet.\n\nSearch above, or add a modifier\nfrom file to begin"), HorizontalAlignment.Stretch));
+            rows.Items.Add(
+                new StackLayoutItem(
+                    CreateCenteredMessage(
+                        "No modifiers added yet.\n\nSearch above, or add a modifier\nfrom file to begin"
+                    ),
+                    HorizontalAlignment.Stretch
+                )
+            );
         }
         else if (state.SelectedObjectId.HasValue)
         {
             for (var i = 0; i < state.Steps.Count; i++)
             {
                 var step = state.Steps[i];
-                rows.Items.Add(new StackLayoutItem(CreateStepRow(
-                    state.SelectedObjectId.Value,
-                    step), HorizontalAlignment.Stretch));
+                rows.Items.Add(
+                    new StackLayoutItem(
+                        CreateStepRow(state.SelectedObjectId.Value, step),
+                        HorizontalAlignment.Stretch
+                    )
+                );
             }
         }
 
         // Add a clickable spacer so clicking empty list space deselects.
         var spacerPanel = new Panel();
         spacerPanel.MouseDown += (_, _) => ClearSelection();
-        rows.Items.Add(new StackLayoutItem(spacerPanel, true) { HorizontalAlignment = HorizontalAlignment.Stretch });
+        rows.Items.Add(
+            new StackLayoutItem(spacerPanel, true)
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            }
+        );
 
         _rowsScrollable.Content = rows;
     }
@@ -454,11 +509,21 @@ public sealed class ModifierStackPanel : Panel
 
         if (!state.SelectedObjectId.HasValue)
         {
-            MessageBox.Show("Select an object first to add a modifier step.", MessageBoxType.Warning);
+            MessageBox.Show(
+                "Select an object first to add a modifier step.",
+                MessageBoxType.Warning
+            );
             return false;
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.AddStep(doc, state.SelectedObjectId.Value, path, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.AddStep(
+                doc,
+                state.SelectedObjectId.Value,
+                path,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return false;
@@ -489,8 +554,12 @@ public sealed class ModifierStackPanel : Panel
         {
             try
             {
-                pathsToRemember.AddRange(Directory.EnumerateFiles(folder, "*.gh", SearchOption.AllDirectories));
-                pathsToRemember.AddRange(Directory.EnumerateFiles(folder, "*.ghx", SearchOption.AllDirectories));
+                pathsToRemember.AddRange(
+                    Directory.EnumerateFiles(folder, "*.gh", SearchOption.AllDirectories)
+                );
+                pathsToRemember.AddRange(
+                    Directory.EnumerateFiles(folder, "*.ghx", SearchOption.AllDirectories)
+                );
             }
             catch
             {
@@ -498,9 +567,17 @@ public sealed class ModifierStackPanel : Panel
             }
         }
 
-        foreach (var candidate in pathsToRemember.Where(candidate => !string.IsNullOrWhiteSpace(candidate)))
+        foreach (
+            var candidate in pathsToRemember.Where(candidate =>
+                !string.IsNullOrWhiteSpace(candidate)
+            )
+        )
         {
-            if (_importedDefinitionPaths.Any(existing => string.Equals(existing, candidate, StringComparison.OrdinalIgnoreCase)))
+            if (
+                _importedDefinitionPaths.Any(existing =>
+                    string.Equals(existing, candidate, StringComparison.OrdinalIgnoreCase)
+                )
+            )
             {
                 continue;
             }
@@ -519,11 +596,17 @@ public sealed class ModifierStackPanel : Panel
             foreach (var rhinoObject in doc.Objects)
             {
                 var spec = ModifierStackStorage.Load(rhinoObject);
-                foreach (var path in spec.Steps
-                             .Select(step => step.Path)
-                             .Where(path => !string.IsNullOrWhiteSpace(path)))
+                foreach (
+                    var path in spec
+                        .Steps.Select(step => step.Path)
+                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                )
                 {
-                    if (_importedDefinitionPaths.Any(existing => string.Equals(existing, path, StringComparison.OrdinalIgnoreCase)))
+                    if (
+                        _importedDefinitionPaths.Any(existing =>
+                            string.Equals(existing, path, StringComparison.OrdinalIgnoreCase)
+                        )
+                    )
                     {
                         continue;
                     }
@@ -533,11 +616,17 @@ public sealed class ModifierStackPanel : Panel
             }
         }
 
-        foreach (var path in state.Steps
-                     .Select(step => step.FullPath)
-                     .Where(path => !string.IsNullOrWhiteSpace(path)))
+        foreach (
+            var path in state
+                .Steps.Select(step => step.FullPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+        )
         {
-            if (_importedDefinitionPaths.Any(existing => string.Equals(existing, path, StringComparison.OrdinalIgnoreCase)))
+            if (
+                _importedDefinitionPaths.Any(existing =>
+                    string.Equals(existing, path, StringComparison.OrdinalIgnoreCase)
+                )
+            )
             {
                 continue;
             }
@@ -561,7 +650,9 @@ public sealed class ModifierStackPanel : Panel
         _definitionChoices.Clear();
         foreach (var path in uniquePaths)
         {
-            _definitionChoices.Add(new DefinitionChoice(path, BuildDefinitionDisplayName(path, duplicateNames)));
+            _definitionChoices.Add(
+                new DefinitionChoice(path, BuildDefinitionDisplayName(path, duplicateNames))
+            );
         }
 
         UpdateDefinitionPickerFilter(string.Empty);
@@ -576,9 +667,7 @@ public sealed class ModifierStackPanel : Panel
         }
 
         var folderName = Path.GetFileName(Path.GetDirectoryName(path) ?? string.Empty);
-        return string.IsNullOrWhiteSpace(folderName)
-            ? fileName
-            : $"{fileName} ({folderName})";
+        return string.IsNullOrWhiteSpace(folderName) ? fileName : $"{fileName} ({folderName})";
     }
 
     private void ResetDefinitionPicker()
@@ -608,7 +697,9 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        var firstProblemStep = state.Steps.FirstOrDefault(step => !string.IsNullOrWhiteSpace(step.ErrorMessage));
+        var firstProblemStep = state.Steps.FirstOrDefault(step =>
+            !string.IsNullOrWhiteSpace(step.ErrorMessage)
+        );
         if (firstProblemStep is not null)
         {
             _expandedStepKeys.Add(GetStepKey(firstProblemStep));
@@ -620,7 +711,8 @@ public sealed class ModifierStackPanel : Panel
         var validKeys = state.Steps.Select(GetStepKey).ToHashSet(StringComparer.Ordinal);
         _selectedStepKeys.RemoveWhere(key => !validKeys.Contains(key));
 
-        if (!string.IsNullOrWhiteSpace(_lastPrimarySelectedStepKey) && !validKeys.Contains(_lastPrimarySelectedStepKey))
+        var primarySelectedKey = _lastPrimarySelectedStepKey;
+        if (primarySelectedKey is not null && !validKeys.Contains(primarySelectedKey))
         {
             _lastPrimarySelectedStepKey = null;
         }
@@ -633,8 +725,8 @@ public sealed class ModifierStackPanel : Panel
             return new List<ModifierStepPanelState>();
         }
 
-        return state.Steps
-            .Where(step => _selectedStepKeys.Contains(GetStepKey(step)))
+        return state
+            .Steps.Where(step => _selectedStepKeys.Contains(GetStepKey(step)))
             .OrderBy(step => step.Index)
             .ToList();
     }
@@ -656,14 +748,26 @@ public sealed class ModifierStackPanel : Panel
                 return;
             }
 
-            var anchorIndex = state.Steps
-                .Select((candidate, index) => new { Step = candidate, Index = index })
-                .FirstOrDefault(candidate => string.Equals(GetStepKey(candidate.Step), anchorKey, StringComparison.Ordinal))
-                ?.Index ?? -1;
-            var clickedIndex = state.Steps
-                .Select((candidate, index) => new { Step = candidate, Index = index })
-                .FirstOrDefault(candidate => string.Equals(GetStepKey(candidate.Step), stepKey, StringComparison.Ordinal))
-                ?.Index ?? -1;
+            var anchorIndex =
+                state
+                    .Steps.Select((candidate, index) => new { Step = candidate, Index = index })
+                    .FirstOrDefault(candidate =>
+                        string.Equals(
+                            GetStepKey(candidate.Step),
+                            anchorKey,
+                            StringComparison.Ordinal
+                        )
+                    )
+                    ?.Index
+                ?? -1;
+            var clickedIndex =
+                state
+                    .Steps.Select((candidate, index) => new { Step = candidate, Index = index })
+                    .FirstOrDefault(candidate =>
+                        string.Equals(GetStepKey(candidate.Step), stepKey, StringComparison.Ordinal)
+                    )
+                    ?.Index
+                ?? -1;
 
             if (anchorIndex < 0 || clickedIndex < 0)
             {
@@ -726,8 +830,8 @@ public sealed class ModifierStackPanel : Panel
 
     private static bool IsAdditiveSelection(MouseEventArgs e)
     {
-        return (e.Modifiers & Keys.Application) == Keys.Application ||
-               (e.Modifiers & Keys.Control) == Keys.Control;
+        return (e.Modifiers & Keys.Application) == Keys.Application
+            || (e.Modifiers & Keys.Control) == Keys.Control;
     }
 
     private static bool IsRangeSelection(MouseEventArgs e)
@@ -832,12 +936,15 @@ public sealed class ModifierStackPanel : Panel
             Items =
             {
                 disclosureButton,
-                new StackLayoutItem(new Label
-                {
-                    Text = title,
-                    TextAlignment = TextAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Center,
-                }, true),
+                new StackLayoutItem(
+                    new Label
+                    {
+                        Text = title,
+                        TextAlignment = TextAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    true
+                ),
             },
         };
     }
@@ -874,11 +981,7 @@ public sealed class ModifierStackPanel : Panel
             Spacing = 0,
             VerticalContentAlignment = VerticalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Items =
-            {
-                stepNameLabel,
-                new StackLayoutItem(new Panel(), true),
-            },
+            Items = { stepNameLabel, new StackLayoutItem(new Panel(), true) },
         };
 
         var headerRow = new TableLayout
@@ -890,35 +993,37 @@ public sealed class ModifierStackPanel : Panel
                 new TableRow(
                     new TableCell(enabledCheckBox),
                     new TableCell(stepNameHost, scaleWidth: true),
-                    new TableCell(disclosureButton)),
+                    new TableCell(disclosureButton)
+                ),
             },
         };
 
-        var headerContainer = new Panel
-        {
-            Content = headerRow,
-            BackgroundColor = headerBackground,
-        };
+        var headerContainer = new Panel { Content = headerRow, BackgroundColor = headerBackground };
 
-        headerContainer.MouseDown += (_, e) => SelectStep(step, IsAdditiveSelection(e), IsRangeSelection(e));
-        headerRow.MouseDown += (_, e) => SelectStep(step, IsAdditiveSelection(e), IsRangeSelection(e));
+        headerContainer.MouseDown += (_, e) =>
+            SelectStep(step, IsAdditiveSelection(e), IsRangeSelection(e));
+        headerRow.MouseDown += (_, e) =>
+            SelectStep(step, IsAdditiveSelection(e), IsRangeSelection(e));
 
         container.Items.Add(new StackLayoutItem(headerContainer, HorizontalAlignment.Stretch));
 
         // Separator line
-        container.Items.Add(new StackLayoutItem(new Panel
-        {
-            Height = 1,
-            BackgroundColor = Colors.LightGrey,
-        }, HorizontalAlignment.Stretch));
+        container.Items.Add(
+            new StackLayoutItem(
+                new Panel { Height = 1, BackgroundColor = Colors.LightGrey },
+                HorizontalAlignment.Stretch
+            )
+        );
 
         if (!string.IsNullOrWhiteSpace(step.ErrorMessage))
         {
-            container.Items.Add(new StackLayout
-            {
-                Padding = new Padding(StepDetailIndent, 2, 0, 0),
-                Items = { CreateMessageLabel(step.ErrorMessage, isError: true) },
-            });
+            container.Items.Add(
+                new StackLayout
+                {
+                    Padding = new Padding(StepDetailIndent, 2, 0, 0),
+                    Items = { CreateMessageLabel(step.ErrorMessage, isError: true) },
+                }
+            );
         }
 
         // Expanded content: inputs indented like sub-layers
@@ -934,9 +1039,16 @@ public sealed class ModifierStackPanel : Panel
             if (step.Inputs.Count > 0)
             {
                 var inputsExpanded = IsSectionExpanded(step, "inputs");
-                childContent.Items.Add(new StackLayoutItem(
-                    CreateSectionHeader("Inputs", inputsExpanded, () => ToggleSectionExpanded(step, "inputs")),
-                    HorizontalAlignment.Stretch));
+                childContent.Items.Add(
+                    new StackLayoutItem(
+                        CreateSectionHeader(
+                            "Inputs",
+                            inputsExpanded,
+                            () => ToggleSectionExpanded(step, "inputs")
+                        ),
+                        HorizontalAlignment.Stretch
+                    )
+                );
 
                 if (inputsExpanded)
                 {
@@ -949,19 +1061,33 @@ public sealed class ModifierStackPanel : Panel
 
                     foreach (var input in step.Inputs)
                     {
-                        inputsContent.Items.Add(new StackLayoutItem(CreateInputRow(objectId, step, input), HorizontalAlignment.Stretch));
+                        inputsContent.Items.Add(
+                            new StackLayoutItem(
+                                CreateInputRow(objectId, step, input),
+                                HorizontalAlignment.Stretch
+                            )
+                        );
                     }
 
-                    childContent.Items.Add(new StackLayoutItem(inputsContent, HorizontalAlignment.Stretch));
+                    childContent.Items.Add(
+                        new StackLayoutItem(inputsContent, HorizontalAlignment.Stretch)
+                    );
                 }
             }
 
             if (step.Outputs.Count > 0)
             {
                 var outputsExpanded = IsSectionExpanded(step, "outputs");
-                childContent.Items.Add(new StackLayoutItem(
-                    CreateSectionHeader("Outputs", outputsExpanded, () => ToggleSectionExpanded(step, "outputs")),
-                    HorizontalAlignment.Stretch));
+                childContent.Items.Add(
+                    new StackLayoutItem(
+                        CreateSectionHeader(
+                            "Outputs",
+                            outputsExpanded,
+                            () => ToggleSectionExpanded(step, "outputs")
+                        ),
+                        HorizontalAlignment.Stretch
+                    )
+                );
 
                 if (outputsExpanded)
                 {
@@ -971,8 +1097,15 @@ public sealed class ModifierStackPanel : Panel
                         Spacing = 0,
                         Padding = new Padding(20, 0, 0, 0),
                     };
-                    outputsContent.Items.Add(new StackLayoutItem(CreateOutputSummaryRow(step.Outputs), HorizontalAlignment.Stretch));
-                    childContent.Items.Add(new StackLayoutItem(outputsContent, HorizontalAlignment.Stretch));
+                    outputsContent.Items.Add(
+                        new StackLayoutItem(
+                            CreateOutputSummaryRow(step.Outputs),
+                            HorizontalAlignment.Stretch
+                        )
+                    );
+                    childContent.Items.Add(
+                        new StackLayoutItem(outputsContent, HorizontalAlignment.Stretch)
+                    );
                 }
             }
 
@@ -984,10 +1117,7 @@ public sealed class ModifierStackPanel : Panel
 
     private static CheckBox CreateStepEnabledCheckBox(Guid objectId, ModifierStepPanelState step)
     {
-        var enabledCheckBox = new CheckBox
-        {
-            Checked = step.Enabled,
-        };
+        var enabledCheckBox = new CheckBox { Checked = step.Enabled };
 
         enabledCheckBox.CheckedChanged += (_, _) =>
         {
@@ -1002,7 +1132,8 @@ public sealed class ModifierStackPanel : Panel
                 objectId,
                 step.Index,
                 enabledCheckBox.Checked == true,
-                out var message);
+                out var message
+            );
 
             if (!string.IsNullOrWhiteSpace(message))
             {
@@ -1058,9 +1189,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        var selectedSteps = GetSelectedSteps(state)
-            .OrderByDescending(step => step.Index)
-            .ToList();
+        var selectedSteps = GetSelectedSteps(state).OrderByDescending(step => step.Index).ToList();
 
         foreach (var step in selectedSteps)
         {
@@ -1079,9 +1208,10 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        var orderedSteps = offset < 0
-            ? GetSelectedSteps(state).OrderBy(step => step.Index)
-            : GetSelectedSteps(state).OrderByDescending(step => step.Index);
+        var orderedSteps =
+            offset < 0
+                ? GetSelectedSteps(state).OrderBy(step => step.Index)
+                : GetSelectedSteps(state).OrderByDescending(step => step.Index);
 
         foreach (var step in orderedSteps)
         {
@@ -1129,7 +1259,11 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
-    private Control CreateInputRow(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private Control CreateInputRow(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var toolTip = BuildInputToolTip(input);
         var editorKind = GetEditorKind(input);
@@ -1137,17 +1271,64 @@ public sealed class ModifierStackPanel : Panel
         return editorKind switch
         {
             InputEditorKind.Toggle => CreateToggleInputRow(objectId, step, input, toolTip),
-            InputEditorKind.Slider => CreateInputBlock(objectId, step, input, CreateSliderEditor(objectId, step, input), toolTip),
-            InputEditorKind.Number => CreateInputBlock(objectId, step, input, CreateNumericEditor(objectId, step, input), toolTip),
-            InputEditorKind.Point => CreateInputBlock(objectId, step, input, CreatePointEditor(objectId, step, input), AppendToolTip(toolTip, GetPointDisplayText(input.SerializedValue))),
-            InputEditorKind.Geometry => CreateInputBlock(objectId, step, input, CreateGeometryEditor(objectId, step, input), AppendToolTip(toolTip, GetGeometryDisplayText(input))),
-            InputEditorKind.DropDown => CreateInputBlock(objectId, step, input, CreateDropDownEditor(objectId, step, input), toolTip),
-            InputEditorKind.FilePath => CreateInputBlock(objectId, step, input, CreateFilePathEditor(objectId, step, input), toolTip),
-            _ => CreateInputBlock(objectId, step, input, CreateTextEditor(objectId, step, input), toolTip),
+            InputEditorKind.Slider => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateSliderEditor(objectId, step, input),
+                toolTip
+            ),
+            InputEditorKind.Number => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateNumericEditor(objectId, step, input),
+                toolTip
+            ),
+            InputEditorKind.Point => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreatePointEditor(objectId, step, input),
+                AppendToolTip(toolTip, GetPointDisplayText(input.SerializedValue))
+            ),
+            InputEditorKind.Geometry => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateGeometryEditor(objectId, step, input),
+                AppendToolTip(toolTip, GetGeometryDisplayText(input))
+            ),
+            InputEditorKind.DropDown => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateDropDownEditor(objectId, step, input),
+                toolTip
+            ),
+            InputEditorKind.FilePath => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateFilePathEditor(objectId, step, input),
+                toolTip
+            ),
+            _ => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateTextEditor(objectId, step, input),
+                toolTip
+            ),
         };
     }
 
-    private Control CreateToggleInputRow(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input, string? toolTip)
+    private Control CreateToggleInputRow(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input,
+        string? toolTip
+    )
     {
         var toggle = new CheckBox
         {
@@ -1156,11 +1337,8 @@ public sealed class ModifierStackPanel : Panel
             ToolTip = toolTip,
         };
 
-        toggle.CheckedChanged += (_, _) => CommitInput(
-            objectId,
-            step.Index,
-            input,
-            toggle.Checked == true ? "true" : "false");
+        toggle.CheckedChanged += (_, _) =>
+            CommitInput(objectId, step.Index, input, toggle.Checked == true ? "true" : "false");
 
         var block = new StackLayout
         {
@@ -1168,7 +1346,10 @@ public sealed class ModifierStackPanel : Panel
             Spacing = 4,
             Items =
             {
-                new StackLayoutItem(CreateInputHeader(objectId, step, input, toolTip), HorizontalAlignment.Stretch),
+                new StackLayoutItem(
+                    CreateInputHeader(objectId, step, input, toolTip),
+                    HorizontalAlignment.Stretch
+                ),
                 toggle,
             },
         };
@@ -1177,7 +1358,13 @@ public sealed class ModifierStackPanel : Panel
         return block;
     }
 
-    private Control CreateInputBlock(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input, Control editor, string? toolTip)
+    private Control CreateInputBlock(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input,
+        Control editor,
+        string? toolTip
+    )
     {
         SetToolTip(editor, toolTip);
 
@@ -1194,7 +1381,10 @@ public sealed class ModifierStackPanel : Panel
                     ToolTip = toolTip,
                 },
                 new StackLayoutItem(editor, true),
-                new StackLayoutItem(CreateInputLinkButton(objectId, step, input), HorizontalAlignment.Right),
+                new StackLayoutItem(
+                    CreateInputLinkButton(objectId, step, input),
+                    HorizontalAlignment.Right
+                ),
             },
         };
 
@@ -1202,17 +1392,19 @@ public sealed class ModifierStackPanel : Panel
         {
             Orientation = Orientation.Vertical,
             Spacing = 4,
-            Items =
-            {
-                new StackLayoutItem(row, HorizontalAlignment.Stretch),
-            },
+            Items = { new StackLayoutItem(row, HorizontalAlignment.Stretch) },
         };
 
         AddInputMessages(block, input);
         return block;
     }
 
-    private Control CreateInputHeader(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input, string? toolTip)
+    private Control CreateInputHeader(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input,
+        string? toolTip
+    )
     {
         var row = new StackLayout
         {
@@ -1220,23 +1412,26 @@ public sealed class ModifierStackPanel : Panel
             Spacing = 6,
             Items =
             {
-                new StackLayoutItem(new Label
-                {
-                    Text = input.Label,
-                    Wrap = WrapMode.Word,
-                    ToolTip = toolTip,
-                }, true),
-                new StackLayoutItem(CreateInputLinkButton(objectId, step, input), HorizontalAlignment.Right),
+                new StackLayoutItem(
+                    new Label
+                    {
+                        Text = input.Label,
+                        Wrap = WrapMode.Word,
+                        ToolTip = toolTip,
+                    },
+                    true
+                ),
+                new StackLayoutItem(
+                    CreateInputLinkButton(objectId, step, input),
+                    HorizontalAlignment.Right
+                ),
             },
         };
 
         return new StackLayout
         {
             Orientation = Orientation.Vertical,
-            Items =
-            {
-                new StackLayoutItem(row, HorizontalAlignment.Stretch),
-            },
+            Items = { new StackLayoutItem(row, HorizontalAlignment.Stretch) },
         };
     }
 
@@ -1244,7 +1439,9 @@ public sealed class ModifierStackPanel : Panel
     {
         if (!string.IsNullOrWhiteSpace(input.LinkStatusMessage))
         {
-            block.Items.Add(CreateMessageLabel(input.LinkStatusMessage, isError: input.IsLinkBroken));
+            block.Items.Add(
+                CreateMessageLabel(input.LinkStatusMessage, isError: input.IsLinkBroken)
+            );
         }
 
         if (input.IsMissingRequiredValue)
@@ -1253,7 +1450,11 @@ public sealed class ModifierStackPanel : Panel
         }
     }
 
-    private Button CreateInputLinkButton(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private Button CreateInputLinkButton(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var linkButton = new Button
         {
@@ -1273,15 +1474,15 @@ public sealed class ModifierStackPanel : Panel
         return linkButton;
     }
 
-    private static ContextMenu BuildInputLinkMenu(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static ContextMenu BuildInputLinkMenu(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var menu = new ContextMenu();
 
-        var clearItem = new ButtonMenuItem
-        {
-            Text = "Use manual value",
-            Enabled = input.HasLink,
-        };
+        var clearItem = new ButtonMenuItem { Text = "Use manual value", Enabled = input.HasLink };
         clearItem.Click += (_, _) => ClearInputLink(objectId, step.Index, input.Id);
         menu.Items.Add(clearItem);
 
@@ -1289,29 +1490,36 @@ public sealed class ModifierStackPanel : Panel
 
         if (input.AvailableLinks.Count == 0)
         {
-            menu.Items.Add(new ButtonMenuItem
-            {
-                Text = "No compatible upstream outputs",
-                Enabled = false,
-            });
+            menu.Items.Add(
+                new ButtonMenuItem { Text = "No compatible upstream outputs", Enabled = false }
+            );
             return menu;
         }
 
-        foreach (var optionGroup in input.AvailableLinks
-                     .GroupBy(option => new { option.SourceStepId, option.SourceStepIndex, option.SourceStepLabel })
-                     .OrderBy(group => group.Key.SourceStepIndex))
+        foreach (
+            var optionGroup in input
+                .AvailableLinks.GroupBy(option => new
+                {
+                    option.SourceStepId,
+                    option.SourceStepIndex,
+                    option.SourceStepLabel,
+                })
+                .OrderBy(group => group.Key.SourceStepIndex)
+        )
         {
             var groupItem = new ButtonMenuItem
             {
                 Text = $"{optionGroup.Key.SourceStepIndex + 1}. {optionGroup.Key.SourceStepLabel}",
             };
 
-            foreach (var option in optionGroup.OrderBy(candidate => candidate.SourceOutputLabel, StringComparer.OrdinalIgnoreCase))
+            foreach (
+                var option in optionGroup.OrderBy(
+                    candidate => candidate.SourceOutputLabel,
+                    StringComparer.OrdinalIgnoreCase
+                )
+            )
             {
-                var optionItem = new ButtonMenuItem
-                {
-                    Text = FormatInputLinkOption(option),
-                };
+                var optionItem = new ButtonMenuItem { Text = FormatInputLinkOption(option) };
                 optionItem.Click += (_, _) => SetInputLink(objectId, step.Index, input.Id, option);
                 groupItem.Items.Add(optionItem);
             }
@@ -1339,7 +1547,8 @@ public sealed class ModifierStackPanel : Panel
         {
             ModifierIoKind.Boolean => InputEditorKind.Toggle,
             ModifierIoKind.NumberSlider => InputEditorKind.Slider,
-            ModifierIoKind.Number when input.Minimum.HasValue && input.Maximum.HasValue => InputEditorKind.Slider,
+            ModifierIoKind.Number when input.Minimum.HasValue && input.Maximum.HasValue =>
+                InputEditorKind.Slider,
             ModifierIoKind.Number => InputEditorKind.Number,
             ModifierIoKind.Point => InputEditorKind.Point,
             ModifierIoKind.Geometry => InputEditorKind.Geometry,
@@ -1349,18 +1558,25 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
-    private static Control CreateSliderEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateSliderEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         if (!TryCreateSliderConfiguration(input, out var configuration))
         {
             return CreateNumericEditor(objectId, step, input);
         }
 
-        var initialValue = configuration.GetValue(configuration.GetSliderValue(GetInitialNumericValue(input)));
+        var initialValue = configuration.GetValue(
+            configuration.GetSliderValue(GetInitialNumericValue(input))
+        );
         var lastCommittedValue = SerializeNumber(initialValue, input.DecimalPlaces);
         var sliderToolTip = AppendToolTip(
             BuildInputToolTip(input),
-            $"{FormatDisplayNumber(configuration.Minimum, input.DecimalPlaces)} to {FormatDisplayNumber(configuration.Maximum, input.DecimalPlaces)}");
+            $"{FormatDisplayNumber(configuration.Minimum, input.DecimalPlaces)} to {FormatDisplayNumber(configuration.Maximum, input.DecimalPlaces)}"
+        );
 
         var slider = new Slider
         {
@@ -1408,7 +1624,11 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
-    private static Control CreateNumericEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateNumericEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var numericEditor = new NumericStepper
         {
@@ -1430,16 +1650,22 @@ public sealed class ModifierStackPanel : Panel
 
         numericEditor.Value = GetInitialNumericValue(input);
 
-        numericEditor.ValueChanged += (_, _) => CommitInput(
-            objectId,
-            step.Index,
-            input,
-            SerializeNumber(numericEditor.Value, input.DecimalPlaces));
+        numericEditor.ValueChanged += (_, _) =>
+            CommitInput(
+                objectId,
+                step.Index,
+                input,
+                SerializeNumber(numericEditor.Value, input.DecimalPlaces)
+            );
 
         return numericEditor;
     }
 
-    private static Control CreateTextEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateTextEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var textEditor = new TextBox
         {
@@ -1448,11 +1674,16 @@ public sealed class ModifierStackPanel : Panel
             Enabled = IsInputEnabled(step, input),
         };
 
-        textEditor.LostFocus += (_, _) => CommitInput(objectId, step.Index, input, textEditor.Text ?? string.Empty);
+        textEditor.LostFocus += (_, _) =>
+            CommitInput(objectId, step.Index, input, textEditor.Text ?? string.Empty);
         return textEditor;
     }
 
-    private static Control CreateFilePathEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateFilePathEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var textEditor = new TextBox
         {
@@ -1461,7 +1692,8 @@ public sealed class ModifierStackPanel : Panel
             Enabled = IsInputEnabled(step, input),
         };
 
-        textEditor.LostFocus += (_, _) => CommitInput(objectId, step.Index, input, textEditor.Text ?? string.Empty);
+        textEditor.LostFocus += (_, _) =>
+            CommitInput(objectId, step.Index, input, textEditor.Text ?? string.Empty);
 
         void CommitPath(string path)
         {
@@ -1486,7 +1718,10 @@ public sealed class ModifierStackPanel : Panel
                 FileName = textEditor.Text,
             };
 
-            if (dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok || string.IsNullOrWhiteSpace(dialog.FileName))
+            if (
+                dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok
+                || string.IsNullOrWhiteSpace(dialog.FileName)
+            )
             {
                 return;
             }
@@ -1522,7 +1757,10 @@ public sealed class ModifierStackPanel : Panel
                 }
             }
 
-            if (dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok || string.IsNullOrWhiteSpace(dialog.Directory))
+            if (
+                dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok
+                || string.IsNullOrWhiteSpace(dialog.Directory)
+            )
             {
                 return;
             }
@@ -1559,7 +1797,10 @@ public sealed class ModifierStackPanel : Panel
                 }
             }
 
-            if (dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok || string.IsNullOrWhiteSpace(dialog.FileName))
+            if (
+                dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok
+                || string.IsNullOrWhiteSpace(dialog.FileName)
+            )
             {
                 return;
             }
@@ -1581,20 +1822,24 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
-    private static Control CreateDropDownEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateDropDownEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
-        var dropDown = new DropDown
-        {
-            Enabled = IsInputEnabled(step, input),
-        };
+        var dropDown = new DropDown { Enabled = IsInputEnabled(step, input) };
 
         foreach (var item in input.ValueListItems)
         {
             dropDown.Items.Add(item);
         }
 
-        if (int.TryParse(input.SerializedValue, out var selectedIndex) &&
-            selectedIndex >= 0 && selectedIndex < input.ValueListItems.Count)
+        if (
+            int.TryParse(input.SerializedValue, out var selectedIndex)
+            && selectedIndex >= 0
+            && selectedIndex < input.ValueListItems.Count
+        )
         {
             dropDown.SelectedIndex = selectedIndex;
         }
@@ -1607,14 +1852,25 @@ public sealed class ModifierStackPanel : Panel
         {
             if (dropDown.SelectedIndex >= 0)
             {
-                CommitInput(objectId, step.Index, input, dropDown.SelectedIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                CommitInput(
+                    objectId,
+                    step.Index,
+                    input,
+                    dropDown.SelectedIndex.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture
+                    )
+                );
             }
         };
 
         return dropDown;
     }
 
-    private static Control CreatePointEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreatePointEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var pickPointButton = new Button
         {
@@ -1641,7 +1897,16 @@ public sealed class ModifierStackPanel : Panel
             }
 
             var serializedValue = SerializePoint(point);
-            if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, serializedValue, out var message))
+            if (
+                !RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(
+                    doc,
+                    objectId,
+                    step.Index,
+                    input.Id,
+                    serializedValue,
+                    out var message
+                )
+            )
             {
                 MessageBox.Show(message, MessageBoxType.Error);
                 return;
@@ -1656,11 +1921,17 @@ public sealed class ModifierStackPanel : Panel
         return pickPointButton;
     }
 
-    private static Control CreateGeometryEditor(Guid objectId, ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static Control CreateGeometryEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         var pickGeometryButton = new Button
         {
-            Text = string.IsNullOrWhiteSpace(input.SerializedValue) ? "Pick Geometry" : "Update Geometry",
+            Text = string.IsNullOrWhiteSpace(input.SerializedValue)
+                ? "Pick Geometry"
+                : "Update Geometry",
             Enabled = IsInputEnabled(step, input),
             ToolTip = GetGeometryDisplayText(input),
         };
@@ -1677,14 +1948,28 @@ public sealed class ModifierStackPanel : Panel
             try
             {
                 doc.Objects.UnselectAll();
-                var rc = RhinoGet.GetMultipleObjects("Select geometry for input", false, Rhino.DocObjects.ObjectType.AnyObject, out var objRefs);
+                var rc = RhinoGet.GetMultipleObjects(
+                    "Select geometry for input",
+                    false,
+                    Rhino.DocObjects.ObjectType.AnyObject,
+                    out var objRefs
+                );
                 if (rc != Rhino.Commands.Result.Success || objRefs is null || objRefs.Length == 0)
                 {
                     return;
                 }
 
                 var ids = string.Join(" ", objRefs.Select(r => r.ObjectId.ToString()));
-                if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, step.Index, input.Id, ids, out var message))
+                if (
+                    !RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(
+                        doc,
+                        objectId,
+                        step.Index,
+                        input.Id,
+                        ids,
+                        out var message
+                    )
+                )
                 {
                     MessageBox.Show(message, MessageBoxType.Error);
                     return;
@@ -1712,28 +1997,28 @@ public sealed class ModifierStackPanel : Panel
             Checked = input.UseModifiedGeometry,
             Enabled = step.Enabled && input.ModifiedGeometrySourceObjectId.HasValue,
         };
-        modifiedGeometryToggle.CheckedChanged += (_, _) => ToggleModifiedGeometry(objectId, step.Index, input, modifiedGeometryToggle.Checked == true);
+        modifiedGeometryToggle.CheckedChanged += (_, _) =>
+            ToggleModifiedGeometry(
+                objectId,
+                step.Index,
+                input,
+                modifiedGeometryToggle.Checked == true
+            );
 
         return new StackLayout
         {
             Orientation = Orientation.Vertical,
             Spacing = 4,
-            Items =
-            {
-                pickGeometryButton,
-                modifiedGeometryToggle,
-            },
+            Items = { pickGeometryButton, modifiedGeometryToggle },
         };
     }
 
-    private static Control CreateOutputSummaryRow(IReadOnlyList<ModifierStepOutputPanelState> outputs)
+    private static Control CreateOutputSummaryRow(
+        IReadOnlyList<ModifierStepOutputPanelState> outputs
+    )
     {
         var toolTip = BuildOutputToolTip(outputs);
-        var outputLines = new StackLayout
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 2,
-        };
+        var outputLines = new StackLayout { Orientation = Orientation.Vertical, Spacing = 2 };
 
         foreach (var output in outputs)
         {
@@ -1754,12 +2039,15 @@ public sealed class ModifierStackPanel : Panel
             Spacing = 4,
             Items =
             {
-                new StackLayoutItem(new Label
-                {
-                    Text = "Outputs",
-                    TextAlignment = TextAlignment.Left,
-                    ToolTip = toolTip,
-                }, HorizontalAlignment.Stretch),
+                new StackLayoutItem(
+                    new Label
+                    {
+                        Text = "Outputs",
+                        TextAlignment = TextAlignment.Left,
+                        ToolTip = toolTip,
+                    },
+                    HorizontalAlignment.Stretch
+                ),
                 new StackLayoutItem(outputLines, HorizontalAlignment.Stretch),
             },
         };
@@ -1785,9 +2073,7 @@ public sealed class ModifierStackPanel : Panel
 
     private static string? BuildInputToolTip(ModifierStepInputPanelState input)
     {
-        return string.IsNullOrWhiteSpace(input.Description)
-            ? null
-            : input.Description;
+        return string.IsNullOrWhiteSpace(input.Description) ? null : input.Description;
     }
 
     private static string? BuildOutputToolTip(IReadOnlyList<ModifierStepOutputPanelState> outputs)
@@ -1797,9 +2083,7 @@ public sealed class ModifierStackPanel : Panel
             .Select(output => $"{output.Label}: {output.Description}")
             .ToArray();
 
-        return descriptions.Length == 0
-            ? null
-            : string.Join(Environment.NewLine, descriptions);
+        return descriptions.Length == 0 ? null : string.Join(Environment.NewLine, descriptions);
     }
 
     private static string? AppendToolTip(string? baseToolTip, string suffix)
@@ -1816,19 +2100,23 @@ public sealed class ModifierStackPanel : Panel
 
     private static double GetIncrement(int decimalPlaces)
     {
-        return decimalPlaces <= 0
-            ? 1d
-            : Math.Pow(10d, -decimalPlaces);
+        return decimalPlaces <= 0 ? 1d : Math.Pow(10d, -decimalPlaces);
     }
 
-    private static bool IsInputEnabled(ModifierStepPanelState step, ModifierStepInputPanelState input)
+    private static bool IsInputEnabled(
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
     {
         return step.Enabled && !input.IsReadOnly;
     }
 
     private static Guid[] GetSelectedObjectIds(RhinoDoc doc)
     {
-        return doc.Objects.GetSelectedObjects(false, false)?.Select(candidate => candidate.Id).ToArray() ?? Array.Empty<Guid>();
+        return doc.Objects.GetSelectedObjects(false, false)
+                ?.Select(candidate => candidate.Id)
+                .ToArray()
+            ?? Array.Empty<Guid>();
     }
 
     private static void RestoreSelection(RhinoDoc doc, IEnumerable<Guid> objectIds)
@@ -1872,7 +2160,10 @@ public sealed class ModifierStackPanel : Panel
             : $"Custom geometry: {input.SerializedValue}";
     }
 
-    private static bool TryCreateSliderConfiguration(ModifierStepInputPanelState input, out NumericSliderConfiguration configuration)
+    private static bool TryCreateSliderConfiguration(
+        ModifierStepInputPanelState input,
+        out NumericSliderConfiguration configuration
+    )
     {
         configuration = default;
         if (!input.Minimum.HasValue || !input.Maximum.HasValue)
@@ -1893,11 +2184,14 @@ public sealed class ModifierStackPanel : Panel
         }
 
         var rawSteps = (maximum - minimum) / GetIncrement(input.DecimalPlaces);
-        var steps = rawSteps > 0d
-            ? (int)Math.Min(MaxSliderResolution, Math.Ceiling(rawSteps))
-            : 1;
+        var steps = rawSteps > 0d ? (int)Math.Min(MaxSliderResolution, Math.Ceiling(rawSteps)) : 1;
 
-        configuration = new NumericSliderConfiguration(minimum, maximum, Math.Max(1, steps), input.DecimalPlaces);
+        configuration = new NumericSliderConfiguration(
+            minimum,
+            maximum,
+            Math.Max(1, steps),
+            input.DecimalPlaces
+        );
         return true;
     }
 
@@ -1925,15 +2219,15 @@ public sealed class ModifierStackPanel : Panel
 
     private static string SerializePoint(Point3d point)
     {
-        return FormattableString.Invariant($"{point.X:0.###############},{point.Y:0.###############},{point.Z:0.###############}");
+        return FormattableString.Invariant(
+            $"{point.X:0.###############},{point.Y:0.###############},{point.Z:0.###############}"
+        );
     }
 
     private static string FormatDisplayNumber(double value, int decimalPlaces)
     {
         var serialized = SerializeNumber(value, decimalPlaces);
-        return decimalPlaces <= 0
-            ? serialized
-            : serialized.TrimEnd('0').TrimEnd('.');
+        return decimalPlaces <= 0 ? serialized : serialized.TrimEnd('0').TrimEnd('.');
     }
 
     private static bool TryParseNumber(string value, out double number)
@@ -1941,7 +2235,12 @@ public sealed class ModifierStackPanel : Panel
         return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out number);
     }
 
-    private static void CommitInput(Guid objectId, int stepIndex, ModifierStepInputPanelState input, string value)
+    private static void CommitInput(
+        Guid objectId,
+        int stepIndex,
+        ModifierStepInputPanelState input,
+        string value
+    )
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null)
@@ -1949,7 +2248,16 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(doc, objectId, stepIndex, input.Id, value, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(
+                doc,
+                objectId,
+                stepIndex,
+                input.Id,
+                value,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1961,7 +2269,12 @@ public sealed class ModifierStackPanel : Panel
         }
     }
 
-    private static void SetInputLink(Guid objectId, int stepIndex, string inputId, ModifierInputLinkOptionPanelState option)
+    private static void SetInputLink(
+        Guid objectId,
+        int stepIndex,
+        string inputId,
+        ModifierInputLinkOptionPanelState option
+    )
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null)
@@ -1969,7 +2282,17 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputLink(doc, objectId, stepIndex, inputId, option.SourceStepId, option.SourceOutputId, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.SetStepInputLink(
+                doc,
+                objectId,
+                stepIndex,
+                inputId,
+                option.SourceStepId,
+                option.SourceOutputId,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -1981,7 +2304,12 @@ public sealed class ModifierStackPanel : Panel
         }
     }
 
-    private static void ToggleModifiedGeometry(Guid objectId, int stepIndex, ModifierStepInputPanelState input, bool useModifiedGeometry)
+    private static void ToggleModifiedGeometry(
+        Guid objectId,
+        int stepIndex,
+        ModifierStepInputPanelState input,
+        bool useModifiedGeometry
+    )
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null)
@@ -1996,7 +2324,16 @@ public sealed class ModifierStackPanel : Panel
                 return;
             }
 
-            if (!RhinoModifiersPlugin.Instance.Engine.SetStepInputObjectPreviewLink(doc, objectId, stepIndex, input.Id, input.ModifiedGeometrySourceObjectId.Value, out var message))
+            if (
+                !RhinoModifiersPlugin.Instance.Engine.SetStepInputObjectPreviewLink(
+                    doc,
+                    objectId,
+                    stepIndex,
+                    input.Id,
+                    input.ModifiedGeometrySourceObjectId.Value,
+                    out var message
+                )
+            )
             {
                 MessageBox.Show(message, MessageBoxType.Error);
                 return;
@@ -2021,7 +2358,15 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.ClearStepInputLink(doc, objectId, stepIndex, inputId, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.ClearStepInputLink(
+                doc,
+                objectId,
+                stepIndex,
+                inputId,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;
@@ -2056,7 +2401,13 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        RhinoModifiersPlugin.Instance.Engine.MoveStep(doc, objectId, index, offset, out var message);
+        RhinoModifiersPlugin.Instance.Engine.MoveStep(
+            doc,
+            objectId,
+            index,
+            offset,
+            out var message
+        );
         if (!string.IsNullOrWhiteSpace(message))
         {
             RhinoApp.WriteLine(message);
@@ -2074,21 +2425,29 @@ public sealed class ModifierStackPanel : Panel
         if (stepIndex > 0)
         {
             var warning =
-                $"Apply Stack will bake modifiers 1 through {stepIndex + 1} into the selected Rhino object and remove those modifiers from the stack.\n\n" +
-                "This action is irreversible. Continue?";
+                $"Apply Stack will bake modifiers 1 through {stepIndex + 1} into the selected Rhino object and remove those modifiers from the stack.\n\n"
+                + "This action is irreversible. Continue?";
             var result = MessageBox.Show(
                 warning,
                 "Apply Stack",
                 MessageBoxButtons.YesNo,
                 MessageBoxType.Warning,
-                MessageBoxDefaultButton.No);
+                MessageBoxDefaultButton.No
+            );
             if (result != DialogResult.Yes)
             {
                 return;
             }
         }
 
-        if (!RhinoModifiersPlugin.Instance.Engine.ApplyThroughStep(doc, objectId, stepIndex, out var message))
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.ApplyThroughStep(
+                doc,
+                objectId,
+                stepIndex,
+                out var message
+            )
+        )
         {
             MessageBox.Show(message, MessageBoxType.Error);
             return;

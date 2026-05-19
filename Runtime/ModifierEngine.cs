@@ -1,11 +1,7 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
-using Grasshopper.Kernel;
-using Grasshopper.Kernel.Types;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
@@ -1913,10 +1909,11 @@ internal sealed class ModifierEngine : IDisposable
 
     private static string[] TokenizeGeometryReferenceValue(string serializedValue)
     {
-        return serializedValue.Split(
-            new[] { ',', ';', '\r', '\n', '\t', ' ' },
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries
-        );
+        return serializedValue
+            .Split(new[] { ',', ';', '\r', '\n', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(token => token.Trim())
+            .Where(token => token.Length > 0)
+            .ToArray();
     }
 
     private static bool TryGetStepOutputValue(

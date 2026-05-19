@@ -1,5 +1,5 @@
-using System.Linq;
 using System.Drawing;
+using System.Linq;
 using Rhino;
 using Rhino.Display;
 using Rhino.DocObjects;
@@ -73,16 +73,31 @@ internal sealed class StackPreviewConduit : DisplayConduit
         return sourceObject?.Attributes.DrawColor(doc) ?? PreviewColor;
     }
 
-    private static DisplayMaterial CreatePreviewMaterial(RhinoObject? sourceObject, Color fallbackColor)
+    private static DisplayMaterial CreatePreviewMaterial(
+        RhinoObject? sourceObject,
+        Color fallbackColor
+    )
     {
         var sourceMaterial = sourceObject?.GetMaterial(true);
-        return sourceMaterial is null ? new DisplayMaterial(fallbackColor) : new DisplayMaterial(sourceMaterial);
+        return sourceMaterial is null
+            ? new DisplayMaterial(fallbackColor)
+            : new DisplayMaterial(sourceMaterial);
     }
 
-    private static void DrawSourceWireframe(DisplayPipeline display, RhinoObject? sourceObject, Color drawColor)
+    private static void DrawSourceWireframe(
+        DisplayPipeline display,
+        RhinoObject? sourceObject,
+        Color drawColor
+    )
     {
-        if (sourceObject is null ||
-            !RhinoModifiers.Runtime.GeometryConversion.TryGetSourceGeometry(sourceObject.Geometry, out var geometry, out _))
+        if (
+            sourceObject is null
+            || !RhinoModifiers.Runtime.GeometryConversion.TryGetSourceGeometry(
+                sourceObject.Geometry,
+                out var geometry,
+                out _
+            )
+        )
         {
             return;
         }
@@ -93,7 +108,12 @@ internal sealed class StackPreviewConduit : DisplayConduit
         }
     }
 
-    private static void DrawGeometry(DisplayPipeline display, GeometryBase geometry, Color drawColor, DisplayMaterial material)
+    private static void DrawGeometry(
+        DisplayPipeline display,
+        GeometryBase geometry,
+        Color drawColor,
+        DisplayMaterial material
+    )
     {
         GeometryRenderer.Draw(display, geometry, drawColor, RenderStyle.Shaded, material);
     }

@@ -11,7 +11,7 @@ namespace RhinoModifiers.UI;
 public enum RenderStyle
 {
     Wireframe,
-    Shaded
+    Shaded,
 }
 
 /// <summary>
@@ -27,7 +27,13 @@ internal static class GeometryRenderer
     /// <param name="drawColor">The primary color to use for wireframes or points.</param>
     /// <param name="style">The rendering style, specifying if it should be shaded or wireframe only.</param>
     /// <param name="material">The material to use for shaded rendering. Required for Shaded mode on Breps, Meshes, and SubDs.</param>
-    public static void Draw(DisplayPipeline display, GeometryBase geometry, Color drawColor, RenderStyle style, DisplayMaterial? material = null)
+    public static void Draw(
+        DisplayPipeline display,
+        GeometryBase geometry,
+        Color drawColor,
+        RenderStyle style,
+        DisplayMaterial? material = null
+    )
     {
         switch (geometry)
         {

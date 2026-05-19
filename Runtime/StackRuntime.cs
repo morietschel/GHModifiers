@@ -143,7 +143,8 @@ namespace RhinoModifiers.Runtime
         {
             if (_stepOutputs.Count != stepCount)
             {
-                _stepOutputs = Enumerable.Range(0, stepCount)
+                _stepOutputs = Enumerable
+                    .Range(0, stepCount)
                     .Select(_ => new List<StepOutputValue>())
                     .ToList();
                 return;

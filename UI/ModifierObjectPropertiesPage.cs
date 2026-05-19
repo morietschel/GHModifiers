@@ -70,10 +70,6 @@ public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
     {
         _panel = null;
         RhinoApp.WriteLine($"GGH: {prefix} {ex}");
-        _host.Content = new Label
-        {
-            Text = $"{prefix} {ex.Message}",
-            Wrap = WrapMode.Word,
-        };
+        _host.Content = new Label { Text = $"{prefix} {ex.Message}", Wrap = WrapMode.Word };
     }
 }

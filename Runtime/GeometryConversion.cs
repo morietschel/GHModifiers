@@ -28,15 +28,19 @@ internal static class GeometryConversion
         return new OutputReadResult(output, totalItemCount, skippedTypes);
     }
 
-    public static bool TryGetSourceGeometry(GeometryBase geometry, out List<GeometryBase> converted, out string error)
+    public static bool TryGetSourceGeometry(
+        GeometryBase geometry,
+        out List<GeometryBase> converted,
+        out string error
+    )
     {
         converted = new List<GeometryBase>();
         error = string.Empty;
 
         switch (geometry)
         {
-            case Rhino.Geometry.Point point:
-                converted.Add(new Rhino.Geometry.Point(point.Location));
+            case Point point:
+                converted.Add(new Point(point.Location));
                 return true;
             case Curve curve:
                 converted.Add(curve.DuplicateCurve());
@@ -59,7 +63,11 @@ internal static class GeometryConversion
         }
     }
 
-    public static bool TryToGooList(IEnumerable<GeometryBase> geometry, out List<IGH_Goo> goos, out string error)
+    public static bool TryToGooList(
+        IEnumerable<GeometryBase> geometry,
+        out List<IGH_Goo> goos,
+        out string error
+    )
     {
         goos = new List<IGH_Goo>();
         error = string.Empty;
@@ -83,7 +91,7 @@ internal static class GeometryConversion
     {
         return geometry switch
         {
-            Rhino.Geometry.Point point => new GH_Point(point.Location),
+            Point point => new GH_Point(point.Location),
             Curve curve => new GH_Curve(curve.DuplicateCurve()),
             Brep brep => new GH_Brep(brep.DuplicateBrep()),
             Extrusion extrusion => new GH_Brep(extrusion.ToBrep()),
@@ -98,7 +106,7 @@ internal static class GeometryConversion
         switch (goo)
         {
             case GH_Point point:
-                geometry = new Rhino.Geometry.Point(point.Value);
+                geometry = new Point(point.Value);
                 return true;
             case GH_Curve curve when curve.Value is not null:
                 geometry = curve.Value.DuplicateCurve();
@@ -126,12 +134,12 @@ internal static class GeometryConversion
                         geometry = geometryBase.Duplicate();
                         return true;
                     case Point3d point3d:
-                        geometry = new Rhino.Geometry.Point(point3d);
+                        geometry = new Point(point3d);
                         return true;
                     default:
                         geometry = null!;
                         return false;
-                    }
+                }
         }
     }
 
@@ -146,5 +154,9 @@ internal static class GeometryConversion
         return goo.GetType().Name;
     }
 
-    public readonly record struct OutputReadResult(List<GeometryBase> Geometry, int TotalItemCount, List<string> SkippedTypes);
+    public readonly record struct OutputReadResult(
+        List<GeometryBase> Geometry,
+        int TotalItemCount,
+        List<string> SkippedTypes
+    );
 }
