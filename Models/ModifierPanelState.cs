@@ -13,7 +13,8 @@ internal sealed class ModifierPanelState
 
     public string StatusMessage { get; init; } = string.Empty;
 
-    public IReadOnlyList<ModifierStepPanelState> Steps { get; init; } = Array.Empty<ModifierStepPanelState>();
+    public IReadOnlyList<ModifierStepPanelState> Steps { get; init; } =
+        Array.Empty<ModifierStepPanelState>();
 }
 
 internal sealed class ModifierStepPanelState
@@ -30,9 +31,11 @@ internal sealed class ModifierStepPanelState
 
     public string ErrorMessage { get; init; } = string.Empty;
 
-    public IReadOnlyList<ModifierStepInputPanelState> Inputs { get; init; } = Array.Empty<ModifierStepInputPanelState>();
+    public IReadOnlyList<ModifierStepInputPanelState> Inputs { get; init; } =
+        Array.Empty<ModifierStepInputPanelState>();
 
-    public IReadOnlyList<ModifierStepOutputPanelState> Outputs { get; init; } = Array.Empty<ModifierStepOutputPanelState>();
+    public IReadOnlyList<ModifierStepOutputPanelState> Outputs { get; init; } =
+        Array.Empty<ModifierStepOutputPanelState>();
 }
 
 internal enum ModifierIoKind
@@ -40,6 +43,8 @@ internal enum ModifierIoKind
     Number,
     NumberSlider,
     Point,
+    Line,
+    Plane,
     String,
     Boolean,
     Color,
@@ -77,7 +82,8 @@ internal sealed class ModifierStepInputPanelState
 
     public string LinkStatusMessage { get; init; } = string.Empty;
 
-    public IReadOnlyList<ModifierInputLinkOptionPanelState> AvailableLinks { get; init; } = Array.Empty<ModifierInputLinkOptionPanelState>();
+    public IReadOnlyList<ModifierInputLinkOptionPanelState> AvailableLinks { get; init; } =
+        Array.Empty<ModifierInputLinkOptionPanelState>();
 
     public IReadOnlyList<string> ValueListItems { get; init; } = Array.Empty<string>();
 

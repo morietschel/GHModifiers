@@ -61,7 +61,8 @@ namespace RhinoModifiers.Runtime
         string Id,
         string Label,
         string Description,
-        ModifierIoKind Kind
+        ModifierIoKind Kind,
+        int PortIndex = -1
     );
 
     /// <summary>
@@ -73,6 +74,17 @@ namespace RhinoModifiers.Runtime
         {
             Descriptor = descriptor;
             Param = param;
+        }
+
+        public RuntimeInputBinding(
+            ModifierInputDescriptor descriptor,
+            IGH_Param param,
+            IGH_Param sourceParam
+        )
+        {
+            Descriptor = descriptor;
+            Param = param;
+            SourceParam = sourceParam;
         }
 
         public RuntimeInputBinding(ModifierInputDescriptor descriptor, GH_NumberSlider slider)
@@ -91,6 +103,8 @@ namespace RhinoModifiers.Runtime
 
         public IGH_Param? Param { get; }
 
+        public IGH_Param? SourceParam { get; }
+
         public GH_NumberSlider? Slider { get; }
 
         public GH_ValueList? ValueList { get; }
@@ -98,6 +112,7 @@ namespace RhinoModifiers.Runtime
         public void Expire()
         {
             Param?.ExpireSolution(false);
+            SourceParam?.ExpireSolution(false);
             Slider?.ExpireSolution(false);
             ValueList?.ExpireSolution(false);
         }

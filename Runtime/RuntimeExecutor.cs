@@ -7,6 +7,7 @@ using System.Linq;
 using GH_IO.Serialization;
 using Grasshopper.GUI.Base;
 using Grasshopper.Kernel;
+using Grasshopper.Kernel.Data;
 using Grasshopper.Kernel.Parameters;
 using Grasshopper.Kernel.Special;
 using Grasshopper.Kernel.Types;
@@ -29,8 +30,48 @@ namespace RhinoModifiers.Runtime;
 /// </remarks>
 internal sealed class RuntimeExecutor : IDisposable
 {
-    private static readonly string[] InputAliases = { "GeomIn", "GeoIn" };
-    private static readonly string[] OutputAliases = { "GeomOut", "GeoOut" };
+    private static class HopsGuids
+    {
+        public static readonly Guid GetString = Guid.Parse("fed87bdd-8327-49cd-949c-09d70f3c345c");
+        public static readonly Guid GetPlane = Guid.Parse("88bd0e1d-363a-469f-9104-57d3aac5d6b8");
+        public static readonly Guid GetLine = Guid.Parse("af519c71-7dc1-4524-b8cc-add5544e2ef6");
+        public static readonly Guid GetGeometry = Guid.Parse(
+            "41dd7ba9-1f53-49d9-af42-a9270b0e9454"
+        );
+        public static readonly Guid GetBoolean = Guid.Parse("51ef601d-f86e-4ee4-bcf2-3d459d3e95e9");
+        public static readonly Guid GetFilePath = Guid.Parse(
+            "e83dd8b2-42aa-41e6-9254-882cddec0a2e"
+        );
+        public static readonly Guid GetInteger = Guid.Parse("b228887e-0852-4d9f-bd46-2591646e0d7c");
+        public static readonly Guid GetNumber = Guid.Parse("7b36b876-9451-46f5-8220-a200d969cc66");
+        public static readonly Guid GetPoint = Guid.Parse("997704ba-c1d3-4262-9090-927c81347ce6");
+
+        public static readonly Guid ContextBake = Guid.Parse(
+            "ae2531b4-bab2-4bb1-b5bf-f2143d10c132"
+        );
+        public static readonly Guid ContextPrint = Guid.Parse(
+            "73215ec5-0eb5-4f85-9e07-b09c4590ce2b"
+        );
+    }
+
+    private static readonly HashSet<Guid> HopsInputComponentGuids = new()
+    {
+        HopsGuids.GetString,
+        HopsGuids.GetPlane,
+        HopsGuids.GetLine,
+        HopsGuids.GetGeometry,
+        HopsGuids.GetBoolean,
+        HopsGuids.GetFilePath,
+        HopsGuids.GetInteger,
+        HopsGuids.GetNumber,
+        HopsGuids.GetPoint,
+    };
+
+    private static readonly HashSet<Guid> HopsOutputComponentGuids = new()
+    {
+        HopsGuids.ContextBake,
+        HopsGuids.ContextPrint,
+    };
 
     private readonly Dictionary<string, DefinitionTemplate> _definitionCache = new(
         StringComparer.OrdinalIgnoreCase
@@ -427,153 +468,83 @@ internal sealed class RuntimeExecutor : IDisposable
 
     private static DefinitionContract CreateDefinitionContract(GH_Document document)
     {
-        var inputGroupIds = GetGroupObjectIds(document, "Inputs");
-        var outputGroupIds = GetGroupObjectIds(document, "Outputs");
-
         var inputs = new List<ModifierInputDescriptor>();
-        foreach (var objectId in inputGroupIds)
-        {
-            var documentObject = ResolveDocumentObject(document, objectId);
-            if (documentObject is null || documentObject is GH_Group)
-            {
-                continue;
-            }
-
-            if (
-                TryCreateInputDescriptor(documentObject, out var descriptor, out var error)
-                && descriptor is not null
-            )
-            {
-                inputs.Add(descriptor);
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(error))
-            {
-                throw new InvalidOperationException(error);
-            }
-        }
-
         var outputs = new List<ModifierOutputDescriptor>();
         var geometryOutputs = new List<ModifierOutputDescriptor>();
-        foreach (var objectId in outputGroupIds)
+
+        foreach (var documentObject in document.Objects)
         {
-            var documentObject = ResolveDocumentObject(document, objectId);
-            if (documentObject is null || documentObject is GH_Group)
+            if (documentObject is GH_Group)
             {
                 continue;
             }
 
+            var componentGuid = GetDocumentObjectComponentGuid(documentObject);
+
             if (
-                TryCreateOutputDescriptor(documentObject, out var descriptor)
-                && descriptor is not null
+                TryCreateInputDescriptor(
+                    documentObject,
+                    componentGuid,
+                    out var inputDescriptor,
+                    out var inputError
+                )
             )
             {
-                outputs.Add(descriptor);
-                if (
-                    documentObject is IGH_Param param
-                    && descriptor.Kind == ModifierIoKind.Geometry
-                    && IsGeometryPipeOutput(param)
-                )
+                if (inputDescriptor is not null)
                 {
-                    geometryOutputs.Add(descriptor);
+                    inputs.Add(inputDescriptor);
+                }
+                else if (!string.IsNullOrWhiteSpace(inputError))
+                {
+                    throw new InvalidOperationException(inputError);
+                }
+                continue;
+            }
+
+            foreach (var outputDescriptor in CreateOutputDescriptors(documentObject, componentGuid))
+            {
+                outputs.Add(outputDescriptor);
+                if (outputDescriptor.Kind == ModifierIoKind.Geometry)
+                {
+                    geometryOutputs.Add(outputDescriptor);
                 }
             }
         }
 
-        var sceneInput = FindLegacySceneInput(document, inputGroupIds);
-        if (geometryOutputs.Count == 0)
+        return new DefinitionContract(null, inputs, outputs, geometryOutputs);
+    }
+
+    private static Guid? GetDocumentObjectComponentGuid(IGH_DocumentObject documentObject)
+    {
+        var property = documentObject.GetType().GetProperty("ComponentGuid");
+        if (property?.GetValue(documentObject) is Guid guid)
         {
-            var legacyOutput = FindLegacyGeometryOutput(document, outputGroupIds);
-            if (legacyOutput is not null)
-            {
-                geometryOutputs.Add(legacyOutput);
-            }
+            return guid;
         }
 
-        return new DefinitionContract(sceneInput, inputs, outputs, geometryOutputs);
-    }
-
-    private static HashSet<Guid> GetGroupObjectIds(GH_Document document, string groupName)
-    {
-        var group = document
-            .Objects.OfType<GH_Group>()
-            .FirstOrDefault(candidate =>
-                candidate.NickName.Equals(groupName, StringComparison.OrdinalIgnoreCase)
-            );
-        return group is null ? new HashSet<Guid>() : new HashSet<Guid>(group.ObjectIDs);
-    }
-
-    private static ModifierInputDescriptor? FindLegacySceneInput(
-        GH_Document document,
-        HashSet<Guid> groupedInputIds
-    )
-    {
-        var param = document
-            .Objects.OfType<IGH_Param>()
-            .FirstOrDefault(candidate =>
-                !groupedInputIds.Contains(candidate.InstanceGuid)
-                && InputAliases.Any(alias =>
-                    candidate.NickName.Equals(alias, StringComparison.OrdinalIgnoreCase)
-                )
-            );
-
-        if (param is null)
-        {
-            return null;
-        }
-
-        if (param.Sources.Count > 0)
-        {
-            throw new InvalidOperationException("Legacy scene geometry input must be unwired.");
-        }
-
-        return CreateParamInputDescriptor(
-            param,
-            ModifierIoKind.Geometry,
-            hasDefaultValue: false,
-            defaultSerializedValue: string.Empty,
-            usesSceneGeometryWhenBlank: true,
-            isOptional: false,
-            isFilePath: false,
-            minimum: null,
-            maximum: null,
-            decimalPlaces: 0
-        );
-    }
-
-    private static ModifierOutputDescriptor? FindLegacyGeometryOutput(
-        GH_Document document,
-        HashSet<Guid> groupedOutputIds
-    )
-    {
-        var param = document
-            .Objects.OfType<IGH_Param>()
-            .FirstOrDefault(candidate =>
-                !groupedOutputIds.Contains(candidate.InstanceGuid)
-                && OutputAliases.Any(alias =>
-                    candidate.NickName.Equals(alias, StringComparison.OrdinalIgnoreCase)
-                )
-            );
-
-        return param is null ? null : CreateOutputDescriptor(param, ModifierIoKind.Geometry);
-    }
-
-    private static bool IsGeometryPipeOutput(IGH_Param param)
-    {
-        return OutputAliases.Any(alias =>
-            param.NickName.Equals(alias, StringComparison.OrdinalIgnoreCase)
-        );
+        return null;
     }
 
     private static bool TryCreateInputDescriptor(
         IGH_DocumentObject documentObject,
+        Guid? componentGuid,
         out ModifierInputDescriptor? descriptor,
         out string error
     )
     {
         descriptor = null;
         error = string.Empty;
+
+        // Native Hops input components (discovered by GUID).
+        if (componentGuid.HasValue && HopsInputComponentGuids.Contains(componentGuid.Value))
+        {
+            descriptor = TryCreateHopsInputDescriptor(
+                documentObject,
+                componentGuid.Value,
+                out error
+            );
+            return descriptor is not null || !string.IsNullOrEmpty(error);
+        }
 
         if (documentObject is GH_ValueList valueList)
         {
@@ -619,35 +590,78 @@ internal sealed class RuntimeExecutor : IDisposable
             return true;
         }
 
-        if (documentObject is not IGH_Param param || !TryGetSupportedParamKind(param, out var kind))
+        return false;
+    }
+
+    private static ModifierInputDescriptor? TryCreateHopsInputDescriptor(
+        IGH_DocumentObject documentObject,
+        Guid componentGuid,
+        out string error
+    )
+    {
+        error = string.Empty;
+
+        if (documentObject is not IGH_Param param)
         {
-            return false;
+            error = $"Hops input component {componentGuid} is not a parameter.";
+            return null;
         }
 
-        if (param.Sources.Count > 0)
+        var kind = componentGuid switch
         {
-            error = $"Input '{GetDisplayLabel(param)}' must be unwired.";
-            return false;
+            var g when g == HopsGuids.GetString => ModifierIoKind.String,
+            var g when g == HopsGuids.GetPlane => ModifierIoKind.Plane,
+            var g when g == HopsGuids.GetLine => ModifierIoKind.Line,
+            var g when g == HopsGuids.GetGeometry => ModifierIoKind.Geometry,
+            var g when g == HopsGuids.GetBoolean => ModifierIoKind.Boolean,
+            var g when g == HopsGuids.GetFilePath => ModifierIoKind.String,
+            var g when g == HopsGuids.GetInteger => ModifierIoKind.Number,
+            var g when g == HopsGuids.GetNumber => ModifierIoKind.Number,
+            var g when g == HopsGuids.GetPoint => ModifierIoKind.Point,
+            _ => default(ModifierIoKind?),
+        };
+
+        if (kind is null)
+        {
+            error = $"Unsupported Hops input component: {componentGuid}";
+            return null;
         }
 
         var hasDefaultValue = TryReadDefaultSerializedValue(
             param,
-            kind,
+            kind.Value,
             out var defaultSerializedValue
         );
-        descriptor = CreateParamInputDescriptor(
+        var minimum = TryGetNumericProperty(param, "Minimum");
+        var maximum = TryGetNumericProperty(param, "Maximum");
+
+        return CreateParamInputDescriptor(
             param,
-            kind,
+            kind.Value,
             hasDefaultValue,
             defaultSerializedValue,
-            usesSceneGeometryWhenBlank: kind == ModifierIoKind.Geometry,
+            usesSceneGeometryWhenBlank: kind.Value == ModifierIoKind.Geometry,
             isOptional: param.Optional,
-            isFilePath: param is Param_FilePath,
-            minimum: null,
-            maximum: null,
-            decimalPlaces: GetDefaultDecimalPlaces(param, kind)
+            isFilePath: kind.Value == ModifierIoKind.String
+                && componentGuid == HopsGuids.GetFilePath,
+            minimum: minimum,
+            maximum: maximum,
+            decimalPlaces: GetDefaultDecimalPlaces(param, kind.Value)
         );
-        return true;
+    }
+
+    private static double? TryGetNumericProperty(object target, string propertyName)
+    {
+        var value = target.GetType().GetProperty(propertyName)?.GetValue(target);
+        return value switch
+        {
+            double d => d,
+            int i => i,
+            decimal m => (double)m,
+            float f => f,
+            long l => l,
+            _ => null,
+        };
     }
 
     private static int GetDefaultDecimalPlaces(IGH_Param param, ModifierIoKind kind)
@@ -660,19 +674,68 @@ internal sealed class RuntimeExecutor : IDisposable
         return param is Param_Integer ? 0 : 3;
     }
 
-    private static bool TryCreateOutputDescriptor(
+    private static IEnumerable<ModifierOutputDescriptor> CreateOutputDescriptors(
         IGH_DocumentObject documentObject,
-        out ModifierOutputDescriptor? descriptor
+        Guid? componentGuid
     )
     {
-        descriptor = null;
-        if (documentObject is not IGH_Param param || !TryGetSupportedParamKind(param, out var kind))
+        if (componentGuid.HasValue && HopsOutputComponentGuids.Contains(componentGuid.Value))
         {
-            return false;
+            return CreateHopsOutputDescriptors(documentObject, componentGuid.Value);
         }
 
-        descriptor = CreateOutputDescriptor(param, kind);
-        return true;
+        return Array.Empty<ModifierOutputDescriptor>();
+    }
+
+    private static IEnumerable<ModifierOutputDescriptor> CreateHopsOutputDescriptors(
+        IGH_DocumentObject documentObject,
+        Guid componentGuid
+    )
+    {
+        if (documentObject is not IGH_Component component)
+        {
+            yield break;
+        }
+
+        if (componentGuid == HopsGuids.ContextBake)
+        {
+            // Context Bake's first input is "Content" (geometry to collect for baking).
+            // Treat it as the modifier step's geometry output.
+            if (component.Params.Input.Count > 0)
+            {
+                var contentInput = component.Params.Input[0];
+                yield return new ModifierOutputDescriptor(
+                    component.InstanceGuid,
+                    $"{component.InstanceGuid:D}:0",
+                    GetDisplayLabel(contentInput),
+                    contentInput.Description ?? string.Empty,
+                    ModifierIoKind.Geometry,
+                    0
+                );
+            }
+            yield break;
+        }
+
+        if (componentGuid == HopsGuids.ContextPrint)
+        {
+            // Context Print's first input is "Text".
+            // Treat it as a string output.
+            if (component.Params.Input.Count > 0)
+            {
+                var textInput = component.Params.Input[0];
+                yield return new ModifierOutputDescriptor(
+                    component.InstanceGuid,
+                    $"{component.InstanceGuid:D}:0",
+                    GetDisplayLabel(textInput),
+                    textInput.Description ?? string.Empty,
+                    ModifierIoKind.String,
+                    0
+                );
+            }
+            yield break;
+        }
+
+        yield break;
     }
 
     private static ModifierInputDescriptor CreateParamInputDescriptor(
@@ -707,20 +770,6 @@ internal sealed class RuntimeExecutor : IDisposable
         };
     }
 
-    private static ModifierOutputDescriptor CreateOutputDescriptor(
-        IGH_Param param,
-        ModifierIoKind kind
-    )
-    {
-        return new ModifierOutputDescriptor(
-            param.InstanceGuid,
-            param.InstanceGuid.ToString("D"),
-            GetDisplayLabel(param),
-            param.Description ?? string.Empty,
-            kind
-        );
-    }
-
     private static string GetDisplayLabel(IGH_DocumentObject documentObject)
     {
         return !string.IsNullOrWhiteSpace(documentObject.NickName)
@@ -738,6 +787,12 @@ internal sealed class RuntimeExecutor : IDisposable
                 return true;
             case Param_Point:
                 kind = ModifierIoKind.Point;
+                return true;
+            case Param_Line:
+                kind = ModifierIoKind.Line;
+                return true;
+            case Param_Plane:
+                kind = ModifierIoKind.Plane;
                 return true;
             case Param_FilePath:
             case Param_String:
@@ -859,7 +914,23 @@ internal sealed class RuntimeExecutor : IDisposable
 
             if (documentObject is IGH_Param param)
             {
-                bindings.Add(new RuntimeInputBinding(descriptor, param));
+                var isHopsInput = HopsInputComponentGuids.Contains(
+                    GetDocumentObjectComponentGuid(documentObject) ?? Guid.Empty
+                );
+
+                if (isHopsInput)
+                {
+                    var sourceParam = CreateSourceParamForKind(descriptor.Kind);
+                    document.AddObject(sourceParam, false);
+                    param.RemoveAllSources();
+                    param.AddSource(sourceParam);
+                    bindings.Add(new RuntimeInputBinding(descriptor, param, sourceParam));
+                }
+                else
+                {
+                    bindings.Add(new RuntimeInputBinding(descriptor, param));
+                }
+
                 continue;
             }
 
@@ -880,10 +951,21 @@ internal sealed class RuntimeExecutor : IDisposable
         foreach (var descriptor in descriptors)
         {
             var param =
-                ResolveDocumentParam(document, descriptor.ObjectId)
-                ?? throw new InvalidOperationException(
+                descriptor.PortIndex >= 0
+                    ? ResolveDocumentComponentInputParam(
+                        document,
+                        descriptor.ObjectId,
+                        descriptor.PortIndex
+                    )
+                    : ResolveDocumentParam(document, descriptor.ObjectId);
+
+            if (param is null)
+            {
+                throw new InvalidOperationException(
                     $"Modifier output '{descriptor.Label}' could not be found in the duplicated document."
                 );
+            }
+
             bindings.Add(new RuntimeOutputBinding(descriptor, param));
         }
 
@@ -901,6 +983,22 @@ internal sealed class RuntimeExecutor : IDisposable
     private static IGH_Param? ResolveDocumentParam(GH_Document document, Guid instanceGuid)
     {
         return ResolveDocumentObject(document, instanceGuid) as IGH_Param;
+    }
+
+    private static IGH_Param? ResolveDocumentComponentInputParam(
+        GH_Document document,
+        Guid componentInstanceGuid,
+        int portIndex
+    )
+    {
+        if (ResolveDocumentObject(document, componentInstanceGuid) is not IGH_Component component)
+        {
+            return null;
+        }
+
+        return portIndex >= 0 && portIndex < component.Params.Input.Count
+            ? component.Params.Input[portIndex]
+            : null;
     }
 
     private StepEvaluationResult EvaluateStep(
@@ -999,9 +1097,27 @@ internal sealed class RuntimeExecutor : IDisposable
             binding.Param.ComputeData();
 
             var output = GeometryConversion.ReadOutput(binding.Param);
-            geometry.AddRange(CloneGeometry(output.Geometry));
-            skipped.AddRange(output.SkippedTypes);
-            totalRawItemCount += output.TotalItemCount;
+            if (output.Geometry.Count == 0 && binding.Param.Sources.Count > 0)
+            {
+                // Fallback: read directly from upstream sources.
+                // Some Hops output components (e.g. Context Bake) may consume
+                // or clear their input param data during solving.
+                foreach (var source in binding.Param.Sources)
+                {
+                    source.CollectData();
+                    source.ComputeData();
+                    var sourceOutput = GeometryConversion.ReadOutput(source);
+                    geometry.AddRange(CloneGeometry(sourceOutput.Geometry));
+                    skipped.AddRange(sourceOutput.SkippedTypes);
+                    totalRawItemCount += sourceOutput.TotalItemCount;
+                }
+            }
+            else
+            {
+                geometry.AddRange(CloneGeometry(output.Geometry));
+                skipped.AddRange(output.SkippedTypes);
+                totalRawItemCount += output.TotalItemCount;
+            }
         }
 
         return StepEvaluationResult.Successful(
@@ -1031,6 +1147,28 @@ internal sealed class RuntimeExecutor : IDisposable
         document.AddObject(sourceParam, false);
         inputParam.AddSource(sourceParam);
         return sourceParam;
+    }
+
+    private static IGH_Param CreateSourceParamForKind(ModifierIoKind kind)
+    {
+        IGH_Param param = kind switch
+        {
+            ModifierIoKind.Number => new Param_Number(),
+            ModifierIoKind.Point => new Param_Point(),
+            ModifierIoKind.Line => new Param_Line(),
+            ModifierIoKind.Plane => new Param_Plane(),
+            ModifierIoKind.String => new Param_String(),
+            ModifierIoKind.Boolean => new Param_Boolean(),
+            ModifierIoKind.Color => new Param_Colour(),
+            ModifierIoKind.Geometry => new Param_Geometry(),
+            _ => new Param_GenericObject(),
+        };
+
+        param.Name = "GGH Runtime Source";
+        param.NickName = "GGH Runtime Source";
+        param.Description = "Injected runtime source for modifier evaluation.";
+        param.Optional = false;
+        return param;
     }
 
     private bool ApplyInputBinding(
@@ -1113,7 +1251,9 @@ internal sealed class RuntimeExecutor : IDisposable
             return true;
         }
 
-        if (binding.Param is null)
+        var targetParam = binding.SourceParam ?? binding.Param;
+
+        if (targetParam is null)
         {
             error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
             return false;
@@ -1123,13 +1263,13 @@ internal sealed class RuntimeExecutor : IDisposable
         {
             if (binding.Descriptor.UsesSceneGeometryWhenBlank)
             {
-                return TryAppendGeometry(binding.Param, currentGeometry, out error);
+                return TryAppendGeometry(targetParam, currentGeometry, out error);
             }
 
             return true;
         }
 
-        ClearParamData(binding.Param);
+        ClearParamData(targetParam);
         switch (binding.Descriptor.Kind)
         {
             case ModifierIoKind.Number:
@@ -1147,8 +1287,8 @@ internal sealed class RuntimeExecutor : IDisposable
                 }
 
                 AppendSingleValue(
-                    binding.Param,
-                    binding.Param is Param_Integer
+                    targetParam,
+                    targetParam is Param_Integer
                         ? (object)(int)Math.Round(numberValue, MidpointRounding.AwayFromZero)
                         : numberValue
                 );
@@ -1167,11 +1307,43 @@ internal sealed class RuntimeExecutor : IDisposable
                     return false;
                 }
 
-                AppendSingleValue(binding.Param, pointValue);
+                AppendSingleValue(targetParam, pointValue);
+                return true;
+
+            case ModifierIoKind.Line:
+                if (string.IsNullOrWhiteSpace(serializedValue))
+                {
+                    return true;
+                }
+
+                if (!TryParseLine(serializedValue, out var lineValue))
+                {
+                    error =
+                        $"Input '{binding.Descriptor.Label}' expects a line formatted like x1,y1,z1;x2,y2,z2.";
+                    return false;
+                }
+
+                AppendSingleValue(targetParam, lineValue);
+                return true;
+
+            case ModifierIoKind.Plane:
+                if (string.IsNullOrWhiteSpace(serializedValue))
+                {
+                    return true;
+                }
+
+                if (!TryParsePlane(serializedValue, out var planeValue))
+                {
+                    error =
+                        $"Input '{binding.Descriptor.Label}' expects a plane formatted like ox,oy,oz;xx,xy,xz;yx,yy,yz.";
+                    return false;
+                }
+
+                AppendSingleValue(targetParam, planeValue);
                 return true;
 
             case ModifierIoKind.String:
-                AppendSingleValue(binding.Param, serializedValue);
+                AppendSingleValue(targetParam, serializedValue);
                 return true;
 
             case ModifierIoKind.Boolean:
@@ -1181,7 +1353,7 @@ internal sealed class RuntimeExecutor : IDisposable
                     return false;
                 }
 
-                AppendSingleValue(binding.Param, boolValue);
+                AppendSingleValue(targetParam, boolValue);
                 return true;
 
             case ModifierIoKind.Color:
@@ -1197,20 +1369,20 @@ internal sealed class RuntimeExecutor : IDisposable
                     return false;
                 }
 
-                AppendSingleValue(binding.Param, colorValue);
+                AppendSingleValue(targetParam, colorValue);
                 return true;
 
             case ModifierIoKind.Geometry:
                 if (string.IsNullOrWhiteSpace(serializedValue))
                 {
                     return binding.Descriptor.UsesSceneGeometryWhenBlank
-                        ? TryAppendGeometry(binding.Param, currentGeometry, out error)
+                        ? TryAppendGeometry(targetParam, currentGeometry, out error)
                         : true;
                 }
 
                 return TryAppendReferencedGeometry(
                     doc,
-                    binding.Param,
+                    targetParam,
                     serializedValue,
                     currentGeometry,
                     out error
@@ -1265,14 +1437,16 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        if (binding.Param is null)
+        var targetParam = binding.SourceParam ?? binding.Param;
+        if (targetParam is null)
         {
             error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
             return false;
         }
 
         return TrySetLinkedParamValues(
-            binding,
+            targetParam,
+            binding.Descriptor.Kind,
             sourceOutputValue,
             sourceStepLabel,
             sourceOutputLabel,
@@ -1331,7 +1505,14 @@ internal sealed class RuntimeExecutor : IDisposable
             return false;
         }
 
-        return TryAppendGeometry(binding.Param, sourceRuntime.PreviewGeometry, out error);
+        var targetParam = binding.SourceParam ?? binding.Param;
+        if (targetParam is null)
+        {
+            error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
+            return false;
+        }
+
+        return TryAppendGeometry(targetParam, sourceRuntime.PreviewGeometry, out error);
     }
 
     private bool TryResolveLinkedOutput(
@@ -1518,12 +1699,16 @@ internal sealed class RuntimeExecutor : IDisposable
     private static void ClearParamData(IGH_Param param)
     {
         param.ClearData();
-        SetPersistentData(param, Array.Empty<object>());
+        TrySetPersistentData(param, Array.Empty<object>());
     }
 
     private static void AppendSingleValue(IGH_Param param, object value)
     {
-        SetPersistentData(param, new[] { value });
+        param.ClearData();
+        if (!TrySetPersistentData(param, new[] { value }))
+        {
+            param.AddVolatileData(new GH_Path(0), 0, value);
+        }
     }
 
     private static bool TryAppendGeometry(
@@ -1533,17 +1718,24 @@ internal sealed class RuntimeExecutor : IDisposable
     )
     {
         error = string.Empty;
-        ClearParamData(param);
-        try
+        param.ClearData();
+
+        if (TrySetPersistentData(param, geometry.Cast<object>()))
         {
-            SetPersistentData(param, geometry.Cast<object>());
             return true;
         }
-        catch (Exception ex)
+
+        if (!GeometryConversion.TryToGooList(geometry, out var goos, out error))
         {
-            error = ex.Message;
             return false;
         }
+
+        for (var i = 0; i < goos.Count; i++)
+        {
+            param.AddVolatileData(new GH_Path(0), i, goos[i]);
+        }
+
+        return true;
     }
 
     private static bool TryAppendReferencedGeometry(
@@ -1658,7 +1850,8 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     private static bool TrySetLinkedParamValues(
-        RuntimeInputBinding binding,
+        IGH_Param targetParam,
+        ModifierIoKind kind,
         StepOutputValue sourceOutputValue,
         string sourceStepLabel,
         string sourceOutputLabel,
@@ -1666,14 +1859,9 @@ internal sealed class RuntimeExecutor : IDisposable
     )
     {
         error = string.Empty;
-        if (binding.Param is null)
-        {
-            error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
-            return false;
-        }
 
         var values = new List<object>(sourceOutputValue.Values.Count);
-        switch (binding.Descriptor.Kind)
+        switch (kind)
         {
             case ModifierIoKind.Number:
                 foreach (var publishedValue in sourceOutputValue.Values)
@@ -1686,7 +1874,7 @@ internal sealed class RuntimeExecutor : IDisposable
                     }
 
                     values.Add(
-                        binding.Param is Param_Integer
+                        targetParam is Param_Integer
                             ? (object)(int)Math.Round(numberValue, MidpointRounding.AwayFromZero)
                             : numberValue
                     );
@@ -1703,6 +1891,32 @@ internal sealed class RuntimeExecutor : IDisposable
                     }
 
                     values.Add(pointValue);
+                }
+                break;
+            case ModifierIoKind.Line:
+                foreach (var publishedValue in sourceOutputValue.Values)
+                {
+                    if (publishedValue is not Line lineValue)
+                    {
+                        error =
+                            $"Linked output '{sourceOutputLabel}' from '{sourceStepLabel}' did not publish line values.";
+                        return false;
+                    }
+
+                    values.Add(lineValue);
+                }
+                break;
+            case ModifierIoKind.Plane:
+                foreach (var publishedValue in sourceOutputValue.Values)
+                {
+                    if (publishedValue is not Plane planeValue)
+                    {
+                        error =
+                            $"Linked output '{sourceOutputLabel}' from '{sourceStepLabel}' did not publish plane values.";
+                        return false;
+                    }
+
+                    values.Add(planeValue);
                 }
                 break;
             case ModifierIoKind.String:
@@ -1758,11 +1972,11 @@ internal sealed class RuntimeExecutor : IDisposable
                 }
                 break;
             default:
-                error = $"Input '{binding.Descriptor.Label}' uses an unsupported input type.";
+                error = $"Input uses an unsupported input type.";
                 return false;
         }
 
-        return TrySetParamValues(binding.Param, values, out error);
+        return TrySetParamValues(targetParam, values, out error);
     }
 
     private static bool TrySetParamValues(
@@ -1772,17 +1986,36 @@ internal sealed class RuntimeExecutor : IDisposable
     )
     {
         error = string.Empty;
-        ClearParamData(param);
-        try
+        param.ClearData();
+
+        if (TrySetPersistentData(param, values))
         {
-            SetPersistentData(param, values);
             return true;
         }
-        catch (Exception ex)
+
+        var index = 0;
+        foreach (var value in values)
         {
-            error = ex.Message;
+            param.AddVolatileData(new GH_Path(0), index++, value);
+        }
+
+        return true;
+    }
+
+    private static bool TrySetPersistentData(IGH_Param param, IEnumerable<object> values)
+    {
+        var clearMethod = param.GetType().GetMethod("Script_ClearPersistentData", Type.EmptyTypes);
+        var addMethod = param
+            .GetType()
+            .GetMethod("Script_AddPersistentData", new[] { typeof(List<object>) });
+        if (clearMethod is null || addMethod is null)
+        {
             return false;
         }
+
+        clearMethod.Invoke(param, Array.Empty<object>());
+        addMethod.Invoke(param, new object[] { values.ToList() });
+        return true;
     }
 
     internal static bool TryGetStepOutputValue(
@@ -1899,6 +2132,24 @@ internal sealed class RuntimeExecutor : IDisposable
                 }
 
                 return false;
+            case ModifierIoKind.Line:
+                if (value is Line line)
+                {
+                    publishedValue = line;
+                    serializedValue = SerializeLine(line);
+                    return true;
+                }
+
+                return false;
+            case ModifierIoKind.Plane:
+                if (value is Plane plane)
+                {
+                    publishedValue = plane;
+                    serializedValue = SerializePlane(plane);
+                    return true;
+                }
+
+                return false;
             case ModifierIoKind.String:
                 publishedValue = value.ToString() ?? string.Empty;
                 serializedValue = (string)publishedValue;
@@ -1979,6 +2230,20 @@ internal sealed class RuntimeExecutor : IDisposable
         );
     }
 
+    private static string SerializeLine(Line line)
+    {
+        return FormattableString.Invariant(
+            $"{line.From.X:0.###############},{line.From.Y:0.###############},{line.From.Z:0.###############};{line.To.X:0.###############},{line.To.Y:0.###############},{line.To.Z:0.###############}"
+        );
+    }
+
+    private static string SerializePlane(Plane plane)
+    {
+        return FormattableString.Invariant(
+            $"{plane.Origin.X:0.###############},{plane.Origin.Y:0.###############},{plane.Origin.Z:0.###############};{plane.XAxis.X:0.###############},{plane.XAxis.Y:0.###############},{plane.XAxis.Z:0.###############};{plane.YAxis.X:0.###############},{plane.YAxis.Y:0.###############},{plane.YAxis.Z:0.###############}"
+        );
+    }
+
     private static bool TryParsePoint(string serializedValue, out Point3d point)
     {
         var cleaned = serializedValue.Replace("(", string.Empty).Replace(")", string.Empty);
@@ -2014,6 +2279,97 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         point = new Point3d(x, y, z);
+        return true;
+    }
+
+    private static bool TryParseLine(string serializedValue, out Line line)
+    {
+        var segments = serializedValue
+            .Split(new[] { ';', '|', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(segment => segment.Trim())
+            .ToArray();
+
+        if (segments.Length != 2)
+        {
+            line = default;
+            return false;
+        }
+
+        if (
+            !TryParsePoint(segments[0], out var fromPoint)
+            || !TryParsePoint(segments[1], out var toPoint)
+        )
+        {
+            line = default;
+            return false;
+        }
+
+        line = new Line(fromPoint, toPoint);
+        return true;
+    }
+
+    private static bool TryParsePlane(string serializedValue, out Plane plane)
+    {
+        var segments = serializedValue
+            .Split(new[] { ';', '|', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(segment => segment.Trim())
+            .ToArray();
+
+        if (segments.Length != 3)
+        {
+            plane = default;
+            return false;
+        }
+
+        if (
+            !TryParsePoint(segments[0], out var origin)
+            || !TryParseVector(segments[1], out var xAxis)
+            || !TryParseVector(segments[2], out var yAxis)
+        )
+        {
+            plane = default;
+            return false;
+        }
+
+        plane = new Plane(origin, xAxis, yAxis);
+        return plane.IsValid;
+    }
+
+    private static bool TryParseVector(string serializedValue, out Vector3d vector)
+    {
+        var cleaned = serializedValue.Replace("(", string.Empty).Replace(")", string.Empty);
+        var parts = cleaned
+            .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .ToArray();
+
+        if (
+            parts.Length != 3
+            || !double.TryParse(
+                parts[0],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var x
+            )
+            || !double.TryParse(
+                parts[1],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var y
+            )
+            || !double.TryParse(
+                parts[2],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var z
+            )
+        )
+        {
+            vector = Vector3d.Unset;
+            return false;
+        }
+
+        vector = new Vector3d(x, y, z);
         return true;
     }
 
@@ -2139,23 +2495,6 @@ internal sealed class RuntimeExecutor : IDisposable
                 yield return goo;
             }
         }
-    }
-
-    private static void SetPersistentData(IGH_Param param, IEnumerable<object> values)
-    {
-        var clearMethod = param.GetType().GetMethod("Script_ClearPersistentData", Type.EmptyTypes);
-        var addMethod = param
-            .GetType()
-            .GetMethod("Script_AddPersistentData", new[] { typeof(List<object>) });
-        if (clearMethod is null || addMethod is null)
-        {
-            throw new InvalidOperationException(
-                $"Parameter '{GetDisplayLabel(param)}' does not expose persistent data scripting APIs."
-            );
-        }
-
-        clearMethod.Invoke(param, Array.Empty<object>());
-        addMethod.Invoke(param, new object[] { values.ToList() });
     }
 
     private static string DescribeGeometry(IEnumerable<GeometryBase> geometry)
