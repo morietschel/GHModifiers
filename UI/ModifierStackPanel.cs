@@ -106,6 +106,21 @@ public sealed class ModifierStackPanel : Panel
 
     private readonly record struct DefinitionChoice(string FullPath, string DisplayName);
 
+    private static void UpdateToolbarIcon(
+        Button button,
+        bool enabled,
+        string enabledResourceName,
+        string? disabledResourceName = null
+    )
+    {
+        var resourceName =
+            enabled || string.IsNullOrWhiteSpace(disabledResourceName)
+                ? enabledResourceName
+                : disabledResourceName;
+
+        button.Image = LoadRhinoIcon(resourceName);
+    }
+
     public ModifierStackPanel()
     {
         _definitionPicker = new DropDown
@@ -149,7 +164,7 @@ public sealed class ModifierStackPanel : Panel
         );
 
         _applySelectedButton = CreateIconButton(
-            LoadRhinoIcon("Rhino.UI.Resources.checkmark.png"),
+            LoadRhinoIcon("Rhino.UI.Resources.Check.svg"),
             "Apply selected modifier.",
             OnApplySelectedClicked
         );
@@ -463,6 +478,30 @@ public sealed class ModifierStackPanel : Panel
             canEdit && selectedSteps.Any(step => step.Index < state.Steps.Count - 1);
         _applySelectedButton.Enabled = canEdit && selectedSteps.Count == 1;
         _deleteSelectedButton.Enabled = canEdit && selectedSteps.Count > 0;
+
+        UpdateToolbarIcon(
+            _moveUpSelectedButton,
+            _moveUpSelectedButton.Enabled,
+            "Rhino.UI.Resources.plugin-sort-up.png",
+            "Rhino.UI.Resources.plugin-sort-up-gray.png"
+        );
+        UpdateToolbarIcon(
+            _moveDownSelectedButton,
+            _moveDownSelectedButton.Enabled,
+            "Rhino.UI.Resources.plugin-sort-down.png",
+            "Rhino.UI.Resources.plugin-sort-down-gray.png"
+        );
+        UpdateToolbarIcon(
+            _deleteSelectedButton,
+            _deleteSelectedButton.Enabled,
+            "Rhino.UI.Resources.Delete.svg",
+            "Rhino.UI.Resources.DeleteGray.svg"
+        );
+        UpdateToolbarIcon(
+            _applySelectedButton,
+            _applySelectedButton.Enabled,
+            "Rhino.UI.Resources.Check.svg"
+        );
 
         _statusLabel.Visible = canEdit && !string.IsNullOrWhiteSpace(state.StatusMessage);
         _statusLabel.Text = state.StatusMessage;
