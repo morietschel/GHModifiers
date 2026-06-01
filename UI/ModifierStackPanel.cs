@@ -26,6 +26,7 @@ public sealed class ModifierStackPanel : Panel
     private const int SectionSpacing = 8;
     private const int RowHeaderHorizontalPadding = 4;
     private const int RowHeaderVerticalPadding = 4;
+    private const int DisclosureIconSize = 14;
     private const int StepDetailIndent = 20;
     private const int StepDetailSpacing = 8;
     private const int MaxOutputPreviewCharacters = 40;
@@ -118,7 +119,7 @@ public sealed class ModifierStackPanel : Panel
                 ? enabledResourceName
                 : disabledResourceName;
 
-        button.Image = LoadRhinoIcon(resourceName);
+        button.Image = LoadRhinoIcon(resourceName!);
     }
 
     public ModifierStackPanel()
@@ -911,9 +912,13 @@ public sealed class ModifierStackPanel : Panel
             : $"{step.Index}:{step.FullPath}";
     }
 
-    private static string GetDisclosureGlyph(bool isExpanded)
+    private static Image? GetDisclosureIcon(bool isExpanded)
     {
-        return isExpanded ? "v" : ">";
+        return LoadRhinoIcon(
+            isExpanded
+                ? "Rhino.UI.Resources.ico_tree_arrow_expanded_gray.ico"
+                : "Rhino.UI.Resources.ico_tree_arrow_collapsed_gray.ico"
+        );
     }
 
     private bool IsStepExpanded(ModifierStepPanelState step)
@@ -985,9 +990,8 @@ public sealed class ModifierStackPanel : Panel
     {
         var disclosureButton = new Button
         {
-            Text = GetDisclosureGlyph(isExpanded),
+            Image = GetDisclosureIcon(isExpanded),
             ToolTip = isExpanded ? "Collapse" : "Expand",
-            Font = new Font(SystemFont.Default, DisclosureGlyphFontSize),
             Width = 24,
             Height = 20,
         };
@@ -1030,9 +1034,8 @@ public sealed class ModifierStackPanel : Panel
         // Header row: checkbox | name (fills width) | disclosure arrow
         var disclosureButton = new Button
         {
-            Text = GetDisclosureGlyph(isExpanded),
+            Image = GetDisclosureIcon(isExpanded),
             ToolTip = isExpanded ? "Collapse" : "Expand",
-            Font = new Font(SystemFont.Default, DisclosureGlyphFontSize),
             Width = 28,
             Height = 20,
         };
