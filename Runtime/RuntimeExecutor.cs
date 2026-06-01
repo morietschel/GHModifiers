@@ -122,7 +122,7 @@ internal sealed class RuntimeExecutor : IDisposable
             StepRuntime stepRuntime;
             try
             {
-                stepRuntime = EnsureStepRuntime(runtime, i, stepSpec);
+                stepRuntime = EnsureStepRuntime(doc, runtime, i, stepSpec);
             }
             catch (Exception ex)
             {
@@ -246,7 +246,7 @@ internal sealed class RuntimeExecutor : IDisposable
             StepRuntime stepRuntime;
             try
             {
-                stepRuntime = EnsureStepRuntime(runtime, i, stepSpec);
+                stepRuntime = EnsureStepRuntime(doc, runtime, i, stepSpec);
             }
             catch (Exception ex)
             {
@@ -285,10 +285,17 @@ internal sealed class RuntimeExecutor : IDisposable
     /// Ensures a step runtime exists for the requested modifier definition and is refreshed
     /// when the definition file changes.
     /// </summary>
-    public StepRuntime EnsureStepRuntime(StackRuntime runtime, int index, ModifierStepSpec spec)
+    public StepRuntime EnsureStepRuntime(
+        RhinoDoc doc,
+        StackRuntime runtime,
+        int index,
+        ModifierStepSpec spec
+    )
     {
         var fullPath = Path.GetFullPath(spec.Path);
-        var lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
+        var lastWriteUtc = File.Exists(fullPath)
+            ? File.GetLastWriteTimeUtc(fullPath)
+            : DateTime.MinValue;
 
         var existing = runtime.StepRuntimes[index];
         if (
@@ -311,7 +318,7 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        var template = GetDefinitionTemplate(fullPath, lastWriteUtc);
+        var template = GetDefinitionTemplate(doc, fullPath, lastWriteUtc);
         var document = GH_Document.DuplicateDocument(template.Document);
         Log($"Step {index} duplicated GH document. Modifier={Path.GetFileName(fullPath)}");
 
@@ -356,38 +363,60 @@ internal sealed class RuntimeExecutor : IDisposable
     /// <summary>
     /// Looks up or loads a Grasshopper definition template.
     /// </summary>
-    public DefinitionTemplate GetDefinitionTemplate(string fullPath, DateTime lastWriteUtc)
+    public DefinitionTemplate GetDefinitionTemplate(
+        RhinoDoc? doc,
+        string fullPath,
+        DateTime lastWriteUtc
+    )
     {
+        var resolvedPath = fullPath;
+        var resolvedLastWrite = lastWriteUtc;
+
+        if (!File.Exists(resolvedPath))
+        {
+            if (
+                doc is not null
+                && EmbeddedDefinitionStorage.TryExtract(doc, resolvedPath, out var tempPath)
+            )
+            {
+                resolvedPath = tempPath;
+                resolvedLastWrite = File.GetLastWriteTimeUtc(resolvedPath);
+            }
+            else
+            {
+                throw new FileNotFoundException("Modifier file not found.", fullPath);
+            }
+        }
+
         if (
-            _definitionCache.TryGetValue(fullPath, out var cached)
-            && cached.LastWriteUtc == lastWriteUtc
+            _definitionCache.TryGetValue(resolvedPath, out var cached)
+            && cached.LastWriteUtc == resolvedLastWrite
         )
         {
-            Log($"Definition template cache hit. Path={fullPath}, LastWriteUtc={lastWriteUtc:O}");
+            Log(
+                $"Definition template cache hit. Path={resolvedPath}, LastWriteUtc={resolvedLastWrite:O}"
+            );
             return cached;
         }
 
         cached?.Dispose();
         if (cached is not null)
         {
-            Log($"Definition template invalidated. Path={fullPath}, LastWriteUtc={lastWriteUtc:O}");
+            Log(
+                $"Definition template invalidated. Path={resolvedPath}, LastWriteUtc={resolvedLastWrite:O}"
+            );
         }
 
-        if (!File.Exists(fullPath))
-        {
-            throw new FileNotFoundException("Modifier file not found.", fullPath);
-        }
-
-        Log($"Loading Grasshopper definition from disk. Path={fullPath}");
-        var document = LoadDefinitionDocument(fullPath);
+        Log($"Loading Grasshopper definition. Path={resolvedPath}");
+        var document = LoadDefinitionDocument(resolvedPath);
         var template = new DefinitionTemplate(
-            fullPath,
-            lastWriteUtc,
+            resolvedPath,
+            resolvedLastWrite,
             document,
             CreateDefinitionContract(document)
         );
-        _definitionCache[fullPath] = template;
-        Log($"Definition template cached. Path={fullPath}, LastWriteUtc={lastWriteUtc:O}");
+        _definitionCache[resolvedPath] = template;
+        Log($"Definition template cached. Path={resolvedPath}, LastWriteUtc={resolvedLastWrite:O}");
         return template;
     }
 
@@ -395,6 +424,7 @@ internal sealed class RuntimeExecutor : IDisposable
     /// Checks whether a modifier definition can be loaded and parsed.
     /// </summary>
     public bool TryGetDefinitionContract(
+        RhinoDoc? doc,
         string path,
         out DefinitionContract contract,
         out string error
@@ -406,7 +436,26 @@ internal sealed class RuntimeExecutor : IDisposable
         try
         {
             var fullPath = Path.GetFullPath(path);
-            contract = GetDefinitionTemplate(fullPath, File.GetLastWriteTimeUtc(fullPath)).Contract;
+            DateTime lastWriteUtc;
+            if (File.Exists(fullPath))
+            {
+                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
+            }
+            else if (
+                doc is not null
+                && EmbeddedDefinitionStorage.TryExtract(doc, fullPath, out var tempPath)
+            )
+            {
+                fullPath = tempPath;
+                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
+            }
+            else
+            {
+                error = $"Modifier file not found: {path}";
+                return false;
+            }
+
+            contract = GetDefinitionTemplate(doc, fullPath, lastWriteUtc).Contract;
             return true;
         }
         catch (Exception ex)
@@ -1533,6 +1582,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
         if (
             !TryGetDefinitionContract(
+                RhinoDoc.ActiveDoc,
                 sourceStep.Path,
                 out var sourceContract,
                 out var contractError

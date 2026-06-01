@@ -42,6 +42,7 @@ public sealed class ModifierStackPanel : Panel
     private readonly Button _applySelectedButton;
     private readonly Button _deleteSelectedButton;
     private readonly Button _bakeButton;
+    private readonly Button _embedButton;
     private readonly List<string> _importedDefinitionPaths = new();
     private readonly List<DefinitionChoice> _definitionChoices = new();
     private readonly HashSet<string> _expandedStepKeys = new(StringComparer.Ordinal);
@@ -166,6 +167,14 @@ public sealed class ModifierStackPanel : Panel
         };
         _bakeButton.Click += OnBakeClicked;
 
+        _embedButton = new Button
+        {
+            Text = "Embed for sharing",
+            ToolTip =
+                "Embed all modifier definitions into the Rhino document so it can be shared without external .gh files.",
+        };
+        _embedButton.Click += OnEmbedClicked;
+
         _statusLabel = new Label
         {
             Text = string.Empty,
@@ -202,7 +211,7 @@ public sealed class ModifierStackPanel : Panel
         {
             Orientation = Orientation.Horizontal,
             Spacing = ToolbarSpacing,
-            Items = { _bakeButton, new StackLayoutItem(new Panel(), true) },
+            Items = { _bakeButton, _embedButton, new StackLayoutItem(new Panel(), true) },
         };
 
         Content = new StackLayout
@@ -345,7 +354,7 @@ public sealed class ModifierStackPanel : Panel
 
         if (!string.IsNullOrWhiteSpace(message))
         {
-            RhinoApp.WriteLine(message);
+            MessageBox.Show(message, MessageBoxType.Information);
         }
     }
 
@@ -374,6 +383,23 @@ public sealed class ModifierStackPanel : Panel
         {
             RhinoApp.WriteLine(message);
         }
+    }
+
+    private void OnEmbedClicked(object? sender, EventArgs e)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            return;
+        }
+
+        if (!RhinoModifiersPlugin.Instance.Engine.EmbedDefinitions(doc, out var message))
+        {
+            MessageBox.Show(message, MessageBoxType.Warning);
+            return;
+        }
+
+        MessageBox.Show(message, MessageBoxType.Information);
     }
 
     private void OnDefinitionSelected(object? sender, EventArgs e)
@@ -429,6 +455,7 @@ public sealed class ModifierStackPanel : Panel
         _addButton.Enabled = canEdit;
         _refreshButton.Enabled = canRefresh;
         _bakeButton.Enabled = canBake;
+        _embedButton.Enabled = true;
         _editSelectedButton.Enabled =
             canEdit && selectedSteps.Any(step => !string.IsNullOrWhiteSpace(step.FullPath));
         _moveUpSelectedButton.Enabled = canEdit && selectedSteps.Any(step => step.Index > 0);

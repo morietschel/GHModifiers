@@ -69,6 +69,7 @@ internal sealed class ModifierEngine : IDisposable
             var displayName = Path.GetFileName(step.Path);
             if (
                 _executor.TryGetDefinitionContract(
+                    doc,
                     step.Path,
                     out var contract,
                     out var contractError
@@ -508,6 +509,7 @@ internal sealed class ModifierEngine : IDisposable
         var spec = ModifierStackStorage.Load(rhinoObject);
         if (
             !TryValidateInputLink(
+                doc,
                 spec,
                 index,
                 inputId,
@@ -846,6 +848,54 @@ internal sealed class ModifierEngine : IDisposable
                 ? "Baked final stack result as a new object."
                 : $"Baked final stack result as {evaluatedGeometry.Count} new objects.";
         Log($"BakeFinalResult completed. Object={objectId}, BakedCount={evaluatedGeometry.Count}");
+        return true;
+    }
+
+    /// <summary>
+    /// Embeds all Grasshopper definition files referenced by modifier stacks in the
+    /// current document so the 3dm can be shared without external .gh / .ghx files.
+    /// </summary>
+    public bool EmbedDefinitions(RhinoDoc doc, out string message)
+    {
+        message = string.Empty;
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var rhinoObject in doc.Objects)
+        {
+            var spec = ModifierStackStorage.Load(rhinoObject);
+            foreach (var step in spec.Steps)
+            {
+                if (!string.IsNullOrWhiteSpace(step.Path))
+                {
+                    paths.Add(step.Path);
+                }
+            }
+        }
+
+        if (paths.Count == 0)
+        {
+            message = "No modifier definitions to embed.";
+            return false;
+        }
+
+        var (added, updated, unchanged) = EmbeddedDefinitionStorage.EmbedDefinitions(doc, paths);
+
+        if (added == 0 && updated == 0)
+        {
+            message = $"All {unchanged} definition(s) are already up to date.";
+        }
+        else
+        {
+            var parts = new List<string>();
+            if (added > 0)
+                parts.Add($"{added} new");
+            if (updated > 0)
+                parts.Add($"{updated} updated");
+            if (unchanged > 0)
+                parts.Add($"{unchanged} unchanged");
+            message = $"Embedded definitions: {string.Join(", ", parts)}.";
+        }
+
         return true;
     }
 
@@ -1226,6 +1276,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private bool TryValidateInputLink(
+        RhinoDoc doc,
         ModifierStackSpec spec,
         int targetIndex,
         string inputId,
@@ -1259,6 +1310,7 @@ internal sealed class ModifierEngine : IDisposable
         var targetStep = spec.Steps[targetIndex];
         if (
             !_executor.TryGetDefinitionContract(
+                doc,
                 targetStep.Path,
                 out var targetContract,
                 out var targetError
@@ -1287,6 +1339,7 @@ internal sealed class ModifierEngine : IDisposable
 
         if (
             !_executor.TryGetDefinitionContract(
+                doc,
                 sourceStep.Path,
                 out var sourceContract,
                 out var sourceError
@@ -1357,6 +1410,7 @@ internal sealed class ModifierEngine : IDisposable
         var targetStep = spec.Steps[targetIndex];
         if (
             !_executor.TryGetDefinitionContract(
+                doc,
                 targetStep.Path,
                 out var targetContract,
                 out var targetError
