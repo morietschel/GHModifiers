@@ -24,7 +24,6 @@ public sealed class ModifierStackPanel : Panel
     private const int ToolbarSpacing = 4;
     private const int PanelPadding = 12;
     private const int SectionSpacing = 8;
-    private const int RowHeaderSpacing = 6;
     private const int RowHeaderHorizontalPadding = 4;
     private const int RowHeaderVerticalPadding = 4;
     private const int StepDetailIndent = 20;

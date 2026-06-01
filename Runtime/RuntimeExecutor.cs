@@ -777,42 +777,6 @@ internal sealed class RuntimeExecutor : IDisposable
             : documentObject.Name;
     }
 
-    private static bool TryGetSupportedParamKind(IGH_Param param, out ModifierIoKind kind)
-    {
-        switch (param)
-        {
-            case Param_Number:
-            case Param_Integer:
-                kind = ModifierIoKind.Number;
-                return true;
-            case Param_Point:
-                kind = ModifierIoKind.Point;
-                return true;
-            case Param_Line:
-                kind = ModifierIoKind.Line;
-                return true;
-            case Param_Plane:
-                kind = ModifierIoKind.Plane;
-                return true;
-            case Param_FilePath:
-            case Param_String:
-                kind = ModifierIoKind.String;
-                return true;
-            case Param_Boolean:
-                kind = ModifierIoKind.Boolean;
-                return true;
-            case Param_Colour:
-                kind = ModifierIoKind.Color;
-                return true;
-            case Param_Geometry:
-                kind = ModifierIoKind.Geometry;
-                return true;
-            default:
-                kind = default;
-                return false;
-        }
-    }
-
     internal static bool AreKindsLinkCompatible(ModifierIoKind inputKind, ModifierIoKind outputKind)
     {
         return IsNumericLinkKind(inputKind) && IsNumericLinkKind(outputKind)
@@ -1790,18 +1754,6 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         return TryAppendGeometry(param, geometry, out error);
-    }
-
-    private static bool TryGetSingleReferencedObjectId(string serializedValue, out Guid objectId)
-    {
-        objectId = Guid.Empty;
-        var tokens = TokenizeGeometryReferenceValue(serializedValue);
-        if (tokens.Length != 1)
-        {
-            return false;
-        }
-
-        return Guid.TryParse(tokens[0], out objectId);
     }
 
     private static string[] TokenizeGeometryReferenceValue(string serializedValue)

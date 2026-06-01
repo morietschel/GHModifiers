@@ -13,10 +13,7 @@ internal sealed class ModifierStackSpec
 
     public ModifierStackSpec Clone()
     {
-        var clone = new ModifierStackSpec
-        {
-            Version = Version,
-        };
+        var clone = new ModifierStackSpec { Version = Version };
 
         foreach (var step in Steps)
         {
@@ -64,7 +61,8 @@ internal sealed class ModifierStepSpec
 
 internal sealed class ModifierInputLinkSpec
 {
-    public ModifierInputLinkSourceKind SourceKind { get; set; } = ModifierInputLinkSourceKind.StepOutput;
+    public ModifierInputLinkSourceKind SourceKind { get; set; } =
+        ModifierInputLinkSourceKind.StepOutput;
 
     public Guid SourceStepId { get; set; }
 
