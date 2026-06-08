@@ -44,6 +44,7 @@ public sealed class ModifierStackPanel : Panel
     private readonly Button _deleteSelectedButton;
     private readonly Button _bakeButton;
     private readonly Button _embedButton;
+    private readonly Button _ravenButton;
     private readonly List<string> _importedDefinitionPaths = new();
     private readonly List<DefinitionChoice> _definitionChoices = new();
     private readonly HashSet<string> _expandedStepKeys = new(StringComparer.Ordinal);
@@ -191,6 +192,9 @@ public sealed class ModifierStackPanel : Panel
         };
         _embedButton.Click += OnEmbedClicked;
 
+        _ravenButton = CreateRavenButton();
+        _ravenButton.Click += OnRavenClicked;
+
         _statusLabel = new Label
         {
             Text = string.Empty,
@@ -223,11 +227,22 @@ public sealed class ModifierStackPanel : Panel
             },
         };
 
-        var footerRow = new StackLayout
+        var footerActionRow = new StackLayout
         {
             Orientation = Orientation.Horizontal,
             Spacing = ToolbarSpacing,
             Items = { _bakeButton, _embedButton, new StackLayoutItem(new Panel(), true) },
+        };
+
+        var footerRow = new StackLayout
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = ToolbarSpacing,
+            Items =
+            {
+                new StackLayoutItem(footerActionRow, HorizontalAlignment.Stretch),
+                new StackLayoutItem(_ravenButton, HorizontalAlignment.Stretch),
+            },
         };
 
         Content = new StackLayout
@@ -418,6 +433,44 @@ public sealed class ModifierStackPanel : Panel
         MessageBox.Show(message, MessageBoxType.Information);
     }
 
+    private static Button CreateRavenButton()
+    {
+        var assemblyDir = Path.GetDirectoryName(typeof(ModifierStackPanel).Assembly.Location)!;
+        var imagePath = Path.GetFullPath(
+            Path.Combine(assemblyDir, "..", "..", "..", "ravennew.png")
+        );
+
+        var button = new Button
+        {
+            Text = "Modify With Raven",
+            ToolTip = "Send the current modifier stack to Raven for editing.",
+            BackgroundColor = Colors.Black,
+            TextColor = Colors.White,
+            Height = 36,
+        };
+
+        if (File.Exists(imagePath))
+        {
+            try
+            {
+                var image = new Bitmap(imagePath);
+                button.Image = image.WithSize(24, 24);
+                button.ImagePosition = ButtonImagePosition.Left;
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        return button;
+    }
+
+    private void OnRavenClicked(object? sender, EventArgs e)
+    {
+        MessageBox.Show("Raven integration is not yet available.", MessageBoxType.Information);
+    }
+
     private void OnDefinitionSelected(object? sender, EventArgs e)
     {
         if (_isUpdatingDefinitionPicker)
@@ -472,6 +525,7 @@ public sealed class ModifierStackPanel : Panel
         _refreshButton.Enabled = canRefresh;
         _bakeButton.Enabled = canBake;
         _embedButton.Enabled = true;
+        _ravenButton.Enabled = canBake;
         _editSelectedButton.Enabled =
             canEdit && selectedSteps.Any(step => !string.IsNullOrWhiteSpace(step.FullPath));
         _moveUpSelectedButton.Enabled = canEdit && selectedSteps.Any(step => step.Index > 0);
