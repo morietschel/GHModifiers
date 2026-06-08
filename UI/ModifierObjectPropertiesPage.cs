@@ -10,7 +10,7 @@ public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
     private readonly Panel _host = new();
     private ModifierStackPanel? _panel;
 
-    public override string EnglishPageTitle => "GGH Stack";
+    public override string EnglishPageTitle => "Object Modifiers";
 
     public override string PageIconEmbeddedResourceString => "RhinoModifiers.Logo_3.ico";
 
