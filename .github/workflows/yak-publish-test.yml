@@ -1,0 +1,219 @@
+name: Build and Publish Yak
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag-like version (e.g. v0.1.0 or v0.1.0-beta.1)"
+        required: true
+        default: "v0.1.0-beta.1"
+
+permissions:
+  contents: write
+
+env:
+  YAK_SOURCE_URL: https://yak.rhino3d.com
+  YAK_CLI_URL: https://files.mcneel.com/yak/tools/0.13.0/linux-x64/yak
+  YAK_PACKAGE_NAME: object-modifiers
+
+jobs:
+  build-package-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 7 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "7.0.x"
+
+      - name: Resolve tag, version, prerelease
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RAW_TAG="${{ github.event.inputs.tag }}"
+          else
+            RAW_TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid tag format: $RAW_TAG"
+            echo "Expected: v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-<pre>"
+            exit 1
+          fi
+
+          VERSION="${RAW_TAG#v}"
+          IS_PRERELEASE=false
+          if [[ "$VERSION" == *-* ]]; then
+            IS_PRERELEASE=true
+          fi
+
+          echo "raw_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore RhinoModifiers.csproj
+
+      - name: Build release (net7)
+        run: >-
+          dotnet build RhinoModifiers.csproj
+          -c Release
+          -f net7.0
+          -p:Version=${{ steps.version.outputs.version }}
+          -clp:NoSummary
+
+      - name: Download Yak CLI (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "$YAK_CLI_URL" -o yak
+          chmod +x yak
+          ./yak --help >/dev/null
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE_DIR="$RUNNER_TEMP/yak-stage"
+          rm -rf "$STAGE_DIR"
+          mkdir -p "$STAGE_DIR"
+
+          cp bin/Release/net7.0/RhinoModifiers.rhp "$STAGE_DIR/"
+          cp bin/Release/net7.0/RhinoModifiers.deps.json "$STAGE_DIR/"
+          cp bin/Release/net7.0/RhinoModifiers.runtimeconfig.json "$STAGE_DIR/"
+
+          if [[ -d Definitions ]]; then
+            cp -R Definitions "$STAGE_DIR/Definitions"
+          fi
+
+          if [[ -f README.md ]]; then
+            cp README.md "$STAGE_DIR/README.md"
+          fi
+
+          # Use repository `wrench.png` as package icon if present.
+          if [[ -f wrench.png ]]; then
+            cp wrench.png "$STAGE_DIR/icon.png"
+            ICON_LINE="icon: icon.png"
+          else
+            ICON_LINE=""
+          fi
+
+          cat > "$STAGE_DIR/manifest.yml" <<EOF
+          name: $YAK_PACKAGE_NAME
+          title: "Object Modifiers"
+          version: ${{ steps.version.outputs.version }}
+          authors:
+            - Dan Kenerson
+            - Moritz Rietschel
+            - Chuck Driesler
+            - Joshua Foxley
+          description: Adds Blender-like modifiers to Rhino
+          url: https://github.com/${{ github.repository }}
+          keywords:
+            - rhino
+            - grasshopper
+            - modifiers
+          $ICON_LINE
+          EOF
+
+          echo "STAGE_DIR=$STAGE_DIR" >> "$GITHUB_ENV"
+
+      - name: Build .yak package
+        id: build_yak
+        shell: bash
+        run: |
+          set -euo pipefail
+          pushd "$STAGE_DIR" >/dev/null
+          "$GITHUB_WORKSPACE/yak" build --platform any
+          PACKAGE_FILE=$(ls -1 *.yak | head -n 1)
+          echo "package_file=$STAGE_DIR/$PACKAGE_FILE" >> "$GITHUB_OUTPUT"
+          popd >/dev/null
+
+      - name: Build GitHub release bundle
+        id: build_release_bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_DIR="$RUNNER_TEMP/github-release"
+          RELEASE_ZIP="$RUNNER_TEMP/${YAK_PACKAGE_NAME}-${{ steps.version.outputs.version }}-release.zip"
+
+          rm -rf "$RELEASE_DIR" "$RELEASE_ZIP"
+          mkdir -p "$RELEASE_DIR"
+
+          cp bin/Release/net7.0/RhinoModifiers.rhp "$RELEASE_DIR/"
+          cp bin/Release/net7.0/RhinoModifiers.deps.json "$RELEASE_DIR/"
+          cp bin/Release/net7.0/RhinoModifiers.runtimeconfig.json "$RELEASE_DIR/"
+
+          if [[ -d Definitions ]]; then
+            cp -R Definitions "$RELEASE_DIR/Definitions"
+          fi
+
+          if [[ -f README.md ]]; then
+            cp README.md "$RELEASE_DIR/README.md"
+          fi
+
+          if [[ -f wrench.png ]]; then
+            cp wrench.png "$RELEASE_DIR/icon.png"
+          fi
+
+          cp "$STAGE_DIR/manifest.yml" "$RELEASE_DIR/manifest.yml"
+
+          pushd "$RELEASE_DIR" >/dev/null
+          zip -r "$RELEASE_ZIP" . >/dev/null
+          popd >/dev/null
+
+          echo "release_zip=$RELEASE_ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yak-package-${{ steps.version.outputs.raw_tag }}
+          path: ${{ steps.build_yak.outputs.package_file }}
+
+      - name: Publish GitHub release assets
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.raw_tag }}
+          name: ${{ steps.version.outputs.raw_tag }}
+          prerelease: ${{ steps.version.outputs.is_prerelease }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.build_yak.outputs.package_file }}
+            ${{ steps.build_release_bundle.outputs.release_zip }}
+
+      - name: Push package to Yak server
+        env:
+          YAK_TOKEN: ${{ secrets.YAK_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${YAK_TOKEN:-}" ]]; then
+            echo "Missing required secret: YAK_TOKEN"
+            exit 1
+          fi
+          ./yak push --source "$YAK_SOURCE_URL" "${{ steps.build_yak.outputs.package_file }}"
+
+      - name: Verify package on Yak server
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Search with prerelease included:"
+          ./yak search --source "$YAK_SOURCE_URL" --all --prerelease "$YAK_PACKAGE_NAME" || true
+
+          if [[ "${{ steps.version.outputs.is_prerelease }}" == "true" ]]; then
+            echo "Tag is prerelease. Default search may omit this version:"
+            ./yak search --source "$YAK_SOURCE_URL" --all "$YAK_PACKAGE_NAME" || true
+          fi

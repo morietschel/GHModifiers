@@ -15,7 +15,7 @@ namespace RhinoModifiers.Runtime;
 /// </summary>
 internal static class EmbeddedDefinitionStorage
 {
-    private const string Key = "GGH.EmbeddedDefinitions.v1";
+    private const string Key = "GGH.EmbeddedDefinitions.V1";
 
     /// <summary>
     /// Reads each existing file in <paramref name="paths"/> and embeds its raw bytes

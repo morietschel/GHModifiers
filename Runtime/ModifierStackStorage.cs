@@ -70,7 +70,7 @@ internal static class ModifierStackStorage
 
     private static void Normalize(ModifierStackSpec spec)
     {
-        spec.Version = Math.Max(spec.Version, 4);
+        spec.Version = 1;
         spec.Steps ??= new List<ModifierStepSpec>();
 
         var seenStepIds = new HashSet<Guid>();

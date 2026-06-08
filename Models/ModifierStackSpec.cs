@@ -5,7 +5,7 @@ namespace RhinoModifiers.Models;
 
 internal sealed class ModifierStackSpec
 {
-    internal const string UserDictionaryKey = "GGH.ModifierStack.v1";
+    internal const string UserDictionaryKey = "GGH.ModifierStack.V1";
 
     public int Version { get; set; } = 4;
 
