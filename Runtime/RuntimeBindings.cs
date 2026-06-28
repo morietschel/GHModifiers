@@ -27,7 +27,7 @@ namespace RhinoModifiers.Runtime
         ModifierInputDescriptor? SceneInput,
         IReadOnlyList<ModifierInputDescriptor> Inputs,
         IReadOnlyList<ModifierOutputDescriptor> Outputs,
-        IReadOnlyList<ModifierOutputDescriptor> GeometryOutputs
+        bool HasGeometryOutputs
     );
 
     /// <summary>
@@ -123,10 +123,13 @@ namespace RhinoModifiers.Runtime
     /// </summary>
     internal sealed class RuntimeOutputBinding
     {
+        internal readonly bool IsGeometryOutput;
+
         public RuntimeOutputBinding(ModifierOutputDescriptor descriptor, IGH_Param param)
         {
             Descriptor = descriptor;
             Param = param;
+            IsGeometryOutput = descriptor.Kind == ModifierIoKind.Geometry;
         }
 
         public ModifierOutputDescriptor Descriptor { get; }

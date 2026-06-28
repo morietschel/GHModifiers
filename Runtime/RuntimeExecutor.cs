@@ -54,8 +54,8 @@ internal sealed class RuntimeExecutor : IDisposable
         );
     }
 
-    private static readonly HashSet<Guid> HopsInputComponentGuids = new()
-    {
+    private static readonly HashSet<Guid> HopsInputComponentGuids =
+    [
         HopsGuids.GetString,
         HopsGuids.GetPlane,
         HopsGuids.GetLine,
@@ -65,13 +65,13 @@ internal sealed class RuntimeExecutor : IDisposable
         HopsGuids.GetInteger,
         HopsGuids.GetNumber,
         HopsGuids.GetPoint,
-    };
+    ];
 
-    private static readonly HashSet<Guid> HopsOutputComponentGuids = new()
-    {
+    private static readonly HashSet<Guid> HopsOutputComponentGuids =
+    [
         HopsGuids.ContextBake,
         HopsGuids.ContextPrint,
-    };
+    ];
 
     private readonly Dictionary<string, DefinitionTemplate> _definitionCache = new(
         StringComparer.OrdinalIgnoreCase
@@ -141,7 +141,7 @@ internal sealed class RuntimeExecutor : IDisposable
                 );
                 runtime.SetOutputs(i, stepRuntime.CachedPublishedOutputs);
                 publishedOutputsByStepId[stepSpec.StepId] = stepRuntime.CachedPublishedOutputs;
-                if (stepRuntime.HasGeometryOutputs)
+                if (stepRuntime.Contract.HasGeometryOutputs)
                 {
                     geometryState = CloneGeometry(stepRuntime.CachedOutput);
                 }
@@ -337,14 +337,12 @@ internal sealed class RuntimeExecutor : IDisposable
 
         var inputBindings = BindInputDescriptors(document, template.Contract.Inputs);
         var outputBindings = BindOutputDescriptors(document, template.Contract.Outputs);
-        var geometryOutputBindings = BindOutputDescriptors(
-            document,
-            template.Contract.GeometryOutputs
-        );
+        int numberOfGeometryOutputs = outputBindings.Count(binding => binding.IsGeometryOutput);
 
         Log(
-            $"Step {index} runtime created. Modifier={Path.GetFileName(fullPath)}, ExposedInputs={inputBindings.Count}, ExposedOutputs={outputBindings.Count}, GeometryOutputs={geometryOutputBindings.Count}"
+            $"Step {index} runtime created. Modifier={Path.GetFileName(fullPath)}, ExposedInputs={inputBindings.Count}, ExposedOutputs={outputBindings.Count}, GeometryOutputs={numberOfGeometryOutputs}"
         );
+
         var stepRuntime = new StepRuntime(
             fullPath,
             lastWriteUtc,
@@ -353,8 +351,7 @@ internal sealed class RuntimeExecutor : IDisposable
             sceneInputSource,
             sceneInputParam,
             inputBindings,
-            outputBindings,
-            geometryOutputBindings
+            outputBindings
         );
         runtime.StepRuntimes[index] = stepRuntime;
         return stepRuntime;
@@ -478,124 +475,137 @@ internal sealed class RuntimeExecutor : IDisposable
 
     private static GH_Document LoadDefinitionDocument(string fullPath)
     {
-        return WithMissingPluginDialogSuppressed(() =>
+        // Suppress missing plugin warnings by trying to auto load any missing plugins.
+        bool originalTryDownloadMissingPlugins = Grasshopper
+            .CentralSettings
+            .TryDownloadMissingPlugins;
+        Grasshopper.CentralSettings.TryDownloadMissingPlugins = true;
+
+        var archive = new GH_Archive();
+        if (!archive.ReadFromFile(fullPath))
         {
-            var archive = new GH_Archive();
-            if (!archive.ReadFromFile(fullPath))
-            {
-                throw new InvalidOperationException(
-                    $"Failed to load Grasshopper definition '{fullPath}'."
-                );
-            }
+            throw new InvalidOperationException(
+                $"Failed to load Grasshopper definition '{fullPath}'."
+            );
+        }
 
-            var document = new GH_Document();
-            if (!archive.ExtractObject(document, "Definition"))
-            {
-                document.Dispose();
-                throw new InvalidOperationException(
-                    $"Grasshopper definition '{fullPath}' did not produce a document."
-                );
-            }
+        Grasshopper.CentralSettings.TryDownloadMissingPlugins = originalTryDownloadMissingPlugins;
 
-            return document;
-        });
+        var document = new GH_Document();
+        if (!archive.ExtractObject(document, "Definition"))
+        {
+            document.Dispose();
+            throw new InvalidOperationException(
+                $"Grasshopper definition '{fullPath}' did not produce a document."
+            );
+        }
+
+        return document;
     }
 
-    private static T WithMissingPluginDialogSuppressed<T>(Func<T> action)
-    {
-        var original = Grasshopper.CentralSettings.TryDownloadMissingPlugins;
-        Grasshopper.CentralSettings.TryDownloadMissingPlugins = false;
-        try
-        {
-            return action();
-        }
-        finally
-        {
-            Grasshopper.CentralSettings.TryDownloadMissingPlugins = original;
-        }
-    }
-
+    /// <summary>
+    /// Creates a definition contract by inspecting the document's objects and extracting
+    /// the inputs and outputs that are relevant to the modifier stack runtime.
+    /// </summary>
+    /// <param name="document">The Grasshopper document to inspect.</param>
+    /// <returns>DefinitionContract</returns>
+    /// <exception cref="InvalidOperationException"></exception>
     private static DefinitionContract CreateDefinitionContract(GH_Document document)
     {
         var inputs = new List<ModifierInputDescriptor>();
         var outputs = new List<ModifierOutputDescriptor>();
-        var geometryOutputs = new List<ModifierOutputDescriptor>();
+        bool hasGeometryOutputs = false;
 
+        // Loop each object. Skip groups/blank objects + add inputs/outputs for Hops components and supported native components (sliders, value lists).
         foreach (var documentObject in document.Objects)
         {
             if (documentObject is GH_Group)
+                continue;
+
+            Guid objectComponentGuid = documentObject.ComponentGuid;
+
+            if (objectComponentGuid == Guid.Empty)
             {
                 continue;
             }
-
-            var componentGuid = GetDocumentObjectComponentGuid(documentObject);
-
-            if (
-                TryCreateInputDescriptor(
+            // if it is a Hops/slider/value list input component, create an input descriptor
+            else if (IsInput(objectComponentGuid))
+            {
+                ModifierInputDescriptor inputDescriptor = CreateInputDescriptor(
                     documentObject,
-                    componentGuid,
-                    out var inputDescriptor,
-                    out var inputError
-                )
-            )
-            {
-                if (inputDescriptor is not null)
-                {
-                    inputs.Add(inputDescriptor);
-                }
-                else if (!string.IsNullOrWhiteSpace(inputError))
-                {
-                    throw new InvalidOperationException(inputError);
-                }
-                continue;
+                    objectComponentGuid
+                );
+                inputs.Add(inputDescriptor);
             }
-
-            foreach (var outputDescriptor in CreateOutputDescriptors(documentObject, componentGuid))
+            // if it is a Hops output component, create an output descriptor
+            else if (IsOutput(objectComponentGuid))
             {
+                ModifierOutputDescriptor outputDescriptor = CreateOutputDescriptor(
+                    (IGH_Component)documentObject,
+                    objectComponentGuid
+                );
                 outputs.Add(outputDescriptor);
+
                 if (outputDescriptor.Kind == ModifierIoKind.Geometry)
                 {
-                    geometryOutputs.Add(outputDescriptor);
+                    hasGeometryOutputs = true;
                 }
             }
         }
 
-        return new DefinitionContract(null, inputs, outputs, geometryOutputs);
+        return new DefinitionContract(null, inputs, outputs, hasGeometryOutputs);
     }
 
-    private static Guid? GetDocumentObjectComponentGuid(IGH_DocumentObject documentObject)
+    /// <summary>
+    /// Determines whether a given component GUID corresponds to a known Hops input component or a supported native input component (slider, value list).
+    /// </summary>
+    /// <param name="componentGuid"></param>
+    /// <returns></returns>
+    private static bool IsInput(Guid componentGuid)
     {
-        var property = documentObject.GetType().GetProperty("ComponentGuid");
-        if (property?.GetValue(documentObject) is Guid guid)
-        {
-            return guid;
-        }
-
-        return null;
+        return HopsInputComponentGuids.Contains(componentGuid);
+        // || componentGuid == typeof(GH_NumberSlider).GUID
+        // || componentGuid == typeof(GH_ValueList).GUID;
     }
 
-    private static bool TryCreateInputDescriptor(
+    /// <summary>
+    /// Determines whether a given component GUID corresponds to a known Hops output component.
+    /// </summary>
+    /// <param name="componentGuid"></param>
+    /// <returns></returns>
+    private static bool IsOutput(Guid componentGuid)
+    {
+        return HopsOutputComponentGuids.Contains(componentGuid);
+    }
+
+    private static ModifierInputDescriptor CreateInputDescriptor(
         IGH_DocumentObject documentObject,
-        Guid? componentGuid,
-        out ModifierInputDescriptor? descriptor,
-        out string error
+        Guid componentGuid
     )
     {
-        descriptor = null;
-        error = string.Empty;
+        ModifierInputDescriptor descriptor;
 
-        // Native Hops input components (discovered by GUID).
-        if (componentGuid.HasValue && HopsInputComponentGuids.Contains(componentGuid.Value))
+        // Checks if special non-hops case, if not is hops
+        if (documentObject is GH_NumberSlider slider)
         {
-            descriptor = TryCreateHopsInputDescriptor(
-                documentObject,
-                componentGuid.Value,
-                out error
+            descriptor = new ModifierInputDescriptor(
+                slider.InstanceGuid,
+                slider.InstanceGuid.ToString("D"),
+                slider.NickName,
+                slider.Description ?? string.Empty,
+                ModifierIoKind.NumberSlider,
+                SerializeNumber(slider.CurrentValue),
+                true,
+                false,
+                false,
+                (double)slider.Slider.Minimum,
+                (double)slider.Slider.Maximum,
+                slider.Slider.Type == GH_SliderAccuracy.Float ? slider.Slider.DecimalPlaces : 0
             );
-            return descriptor is not null || !string.IsNullOrEmpty(error);
-        }
 
-        if (documentObject is GH_ValueList valueList)
+            return descriptor;
+        }
+        else if (documentObject is GH_ValueList valueList)
         {
             var selectedIndex = valueList.ListItems.FindIndex(item => item.Selected);
             if (selectedIndex < 0)
@@ -617,43 +627,27 @@ internal sealed class RuntimeExecutor : IDisposable
             {
                 ValueListItems = valueList.ListItems.ConvertAll(item => item.Name),
             };
-            return true;
-        }
 
-        if (documentObject is GH_NumberSlider slider)
+            return descriptor;
+        }
+        else
         {
-            descriptor = new ModifierInputDescriptor(
-                slider.InstanceGuid,
-                slider.InstanceGuid.ToString("D"),
-                slider.NickName,
-                slider.Description ?? string.Empty,
-                ModifierIoKind.NumberSlider,
-                SerializeNumber(slider.CurrentValue),
-                true,
-                false,
-                false,
-                (double)slider.Slider.Minimum,
-                (double)slider.Slider.Maximum,
-                slider.Slider.Type == GH_SliderAccuracy.Float ? slider.Slider.DecimalPlaces : 0
-            );
-            return true;
-        }
+            descriptor = CreateHopsInputDescriptor(documentObject, componentGuid);
 
-        return false;
+            return descriptor;
+        }
     }
 
-    private static ModifierInputDescriptor? TryCreateHopsInputDescriptor(
+    private static ModifierInputDescriptor CreateHopsInputDescriptor(
         IGH_DocumentObject documentObject,
-        Guid componentGuid,
-        out string error
+        Guid componentGuid
     )
     {
-        error = string.Empty;
-
         if (documentObject is not IGH_Param param)
         {
-            error = $"Hops input component {componentGuid} is not a parameter.";
-            return null;
+            throw new InvalidOperationException(
+                $"Hops input component '{componentGuid}' is not a parameter."
+            );
         }
 
         var kind = componentGuid switch
@@ -667,18 +661,14 @@ internal sealed class RuntimeExecutor : IDisposable
             var g when g == HopsGuids.GetInteger => ModifierIoKind.Number,
             var g when g == HopsGuids.GetNumber => ModifierIoKind.Number,
             var g when g == HopsGuids.GetPoint => ModifierIoKind.Point,
-            _ => default(ModifierIoKind?),
+            _ => throw new InvalidOperationException(
+                $"Unsupported output Hops component: {componentGuid}"
+            ),
         };
-
-        if (kind is null)
-        {
-            error = $"Unsupported Hops input component: {componentGuid}";
-            return null;
-        }
 
         var hasDefaultValue = TryReadDefaultSerializedValue(
             param,
-            kind.Value,
+            kind,
             out var defaultSerializedValue
         );
         var minimum = TryGetNumericProperty(param, "Minimum");
@@ -686,16 +676,15 @@ internal sealed class RuntimeExecutor : IDisposable
 
         return CreateParamInputDescriptor(
             param,
-            kind.Value,
+            kind,
             hasDefaultValue,
             defaultSerializedValue,
-            usesSceneGeometryWhenBlank: kind.Value == ModifierIoKind.Geometry,
+            usesSceneGeometryWhenBlank: kind == ModifierIoKind.Geometry,
             isOptional: param.Optional,
-            isFilePath: kind.Value == ModifierIoKind.String
-                && componentGuid == HopsGuids.GetFilePath,
+            isFilePath: kind == ModifierIoKind.String && componentGuid == HopsGuids.GetFilePath,
             minimum: minimum,
             maximum: maximum,
-            decimalPlaces: GetDefaultDecimalPlaces(param, kind.Value)
+            decimalPlaces: GetDefaultDecimalPlaces(param, kind)
         );
     }
 
@@ -723,68 +712,37 @@ internal sealed class RuntimeExecutor : IDisposable
         return param is Param_Integer ? 0 : 3;
     }
 
-    private static IEnumerable<ModifierOutputDescriptor> CreateOutputDescriptors(
-        IGH_DocumentObject documentObject,
-        Guid? componentGuid
-    )
-    {
-        if (componentGuid.HasValue && HopsOutputComponentGuids.Contains(componentGuid.Value))
-        {
-            return CreateHopsOutputDescriptors(documentObject, componentGuid.Value);
-        }
-
-        return Array.Empty<ModifierOutputDescriptor>();
-    }
-
-    private static IEnumerable<ModifierOutputDescriptor> CreateHopsOutputDescriptors(
-        IGH_DocumentObject documentObject,
+    private static ModifierOutputDescriptor CreateOutputDescriptor(
+        IGH_Component component,
         Guid componentGuid
     )
     {
-        if (documentObject is not IGH_Component component)
+        ModifierIoKind kind = componentGuid switch
         {
-            yield break;
+            var g when g == HopsGuids.ContextBake => ModifierIoKind.Geometry,
+            var g when g == HopsGuids.ContextPrint => ModifierIoKind.String,
+            _ => throw new InvalidOperationException(
+                $"Unsupported output Hops component: {componentGuid}"
+            ),
+        };
+
+        if (component.Params.Input.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Hops output component '{componentGuid}' has no input parameter to describe."
+            );
         }
 
-        if (componentGuid == HopsGuids.ContextBake)
-        {
-            // Context Bake's first input is "Content" (geometry to collect for baking).
-            // Treat it as the modifier step's geometry output.
-            if (component.Params.Input.Count > 0)
-            {
-                var contentInput = component.Params.Input[0];
-                yield return new ModifierOutputDescriptor(
-                    component.InstanceGuid,
-                    $"{component.InstanceGuid:D}:0",
-                    GetDisplayLabel(contentInput),
-                    contentInput.Description ?? string.Empty,
-                    ModifierIoKind.Geometry,
-                    0
-                );
-            }
-            yield break;
-        }
+        var input = component.Params.Input[0];
 
-        if (componentGuid == HopsGuids.ContextPrint)
-        {
-            // Context Print's first input is "Text".
-            // Treat it as a string output.
-            if (component.Params.Input.Count > 0)
-            {
-                var textInput = component.Params.Input[0];
-                yield return new ModifierOutputDescriptor(
-                    component.InstanceGuid,
-                    $"{component.InstanceGuid:D}:0",
-                    GetDisplayLabel(textInput),
-                    textInput.Description ?? string.Empty,
-                    ModifierIoKind.String,
-                    0
-                );
-            }
-            yield break;
-        }
-
-        yield break;
+        return new ModifierOutputDescriptor(
+            component.InstanceGuid,
+            $"{component.InstanceGuid:D}:0",
+            GetDisplayLabel(input),
+            input.Description ?? string.Empty,
+            kind,
+            0
+        );
     }
 
     private static ModifierInputDescriptor CreateParamInputDescriptor(
@@ -927,9 +885,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
             if (documentObject is IGH_Param param)
             {
-                var isHopsInput = HopsInputComponentGuids.Contains(
-                    GetDocumentObjectComponentGuid(documentObject) ?? Guid.Empty
-                );
+                var isHopsInput = HopsInputComponentGuids.Contains(documentObject.ComponentGuid);
 
                 if (isHopsInput)
                 {
@@ -1075,66 +1031,54 @@ internal sealed class RuntimeExecutor : IDisposable
             binding.Expire();
         }
 
-        foreach (var binding in runtime.GeometryOutputs)
-        {
-            binding.Expire();
-        }
-
         runtime.Document.NewSolution(true, GH_SolutionMode.Silent);
 
+        bool hasGeometryBindings = false;
         var outputValues = new List<StepOutputValue>(runtime.Outputs.Count);
+        var geometry = new List<GeometryBase>();
+        var skipped = new List<string>();
+        var totalRawItemCount = 0;
+
         foreach (var binding in runtime.Outputs)
         {
             binding.Param.CollectData();
             binding.Param.ComputeData();
-            outputValues.Add(CapturePublishedOutput(binding.Descriptor, binding.Param));
-        }
 
-        if (runtime.GeometryOutputs.Count == 0)
-        {
-            return StepEvaluationResult.Successful(
-                false,
-                new List<GeometryBase>(),
-                outputValues,
-                0,
-                new List<string>()
-            );
-        }
-
-        var geometry = new List<GeometryBase>();
-        var skipped = new List<string>();
-        var totalRawItemCount = 0;
-        foreach (var binding in runtime.GeometryOutputs)
-        {
-            binding.Param.CollectData();
-            binding.Param.ComputeData();
-
-            var output = GeometryConversion.ReadOutput(binding.Param);
-            if (output.Geometry.Count == 0 && binding.Param.Sources.Count > 0)
+            if (binding.IsGeometryOutput)
             {
-                // Fallback: read directly from upstream sources.
-                // Some Hops output components (e.g. Context Bake) may consume
-                // or clear their input param data during solving.
-                foreach (var source in binding.Param.Sources)
+                hasGeometryBindings = true;
+
+                var output = GeometryConversion.ReadOutput(binding.Param);
+                if (output.Geometry.Count == 0 && binding.Param.Sources.Count > 0)
                 {
-                    source.CollectData();
-                    source.ComputeData();
-                    var sourceOutput = GeometryConversion.ReadOutput(source);
-                    geometry.AddRange(CloneGeometry(sourceOutput.Geometry));
-                    skipped.AddRange(sourceOutput.SkippedTypes);
-                    totalRawItemCount += sourceOutput.TotalItemCount;
+                    // Fallback: read directly from upstream sources.
+                    // Some Hops output components (e.g. Context Bake) may consume
+                    // or clear their input param data during solving.
+                    foreach (var source in binding.Param.Sources)
+                    {
+                        source.CollectData();
+                        source.ComputeData();
+                        var sourceOutput = GeometryConversion.ReadOutput(source);
+                        geometry.AddRange(CloneGeometry(sourceOutput.Geometry));
+                        skipped.AddRange(sourceOutput.SkippedTypes);
+                        totalRawItemCount += sourceOutput.TotalItemCount;
+                    }
+                }
+                else
+                {
+                    geometry.AddRange(CloneGeometry(output.Geometry));
+                    skipped.AddRange(output.SkippedTypes);
+                    totalRawItemCount += output.TotalItemCount;
                 }
             }
             else
             {
-                geometry.AddRange(CloneGeometry(output.Geometry));
-                skipped.AddRange(output.SkippedTypes);
-                totalRawItemCount += output.TotalItemCount;
+                outputValues.Add(CapturePublishedOutput(binding.Descriptor, binding.Param));
             }
         }
 
         return StepEvaluationResult.Successful(
-            true,
+            hasGeometryBindings,
             geometry,
             outputValues,
             totalRawItemCount,
@@ -1149,8 +1093,8 @@ internal sealed class RuntimeExecutor : IDisposable
     {
         var sourceParam = new Param_Geometry
         {
-            Name = "GGH Runtime Input",
-            NickName = "GGH Runtime Input",
+            Name = "Modifiers Runtime Input",
+            NickName = "Modifiers Runtime Input",
             Description = "Injected runtime input for scene-bound modifier evaluation.",
             MutableNickName = false,
             Hidden = true,
@@ -1177,8 +1121,8 @@ internal sealed class RuntimeExecutor : IDisposable
             _ => new Param_GenericObject(),
         };
 
-        param.Name = "GGH Runtime Source";
-        param.NickName = "GGH Runtime Source";
+        param.Name = "Modifiers Runtime Source";
+        param.NickName = "Modifiers Runtime Source";
         param.Description = "Injected runtime source for modifier evaluation.";
         param.Optional = false;
         return param;
@@ -2558,6 +2502,6 @@ internal sealed class RuntimeExecutor : IDisposable
 
     private static void Log(string message)
     {
-        System.Diagnostics.Debug.WriteLine($"GGH: {message}");
+        System.Diagnostics.Debug.WriteLine($"Modifiers: {message}");
     }
 }

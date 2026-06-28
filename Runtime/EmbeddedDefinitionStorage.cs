@@ -15,7 +15,7 @@ namespace RhinoModifiers.Runtime;
 /// </summary>
 internal static class EmbeddedDefinitionStorage
 {
-    private const string Key = "GGH.EmbeddedDefinitions.V1";
+    private const string Key = "Modifiers.EmbeddedDefinitions.V1";
 
     /// <summary>
     /// Reads each existing file in <paramref name="paths"/> and embeds its raw bytes
@@ -83,7 +83,7 @@ internal static class EmbeddedDefinitionStorage
 
         var bytes = Convert.FromBase64String(entry.Base64);
         var hash = ComputeHash(bytes);
-        var tempDir = Path.Combine(Path.GetTempPath(), "GGH_Embedded", hash);
+        var tempDir = Path.Combine(Path.GetTempPath(), "Modifiers_Embedded", hash);
         Directory.CreateDirectory(tempDir);
 
         tempPath = Path.Combine(tempDir, Path.GetFileName(path));
@@ -118,8 +118,7 @@ internal static class EmbeddedDefinitionStorage
 
     private static string ComputeHash(byte[] bytes)
     {
-        using var sha = SHA256.Create();
-        return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty);
+        return BitConverter.ToString(SHA256.HashData(bytes)).Replace("-", string.Empty);
     }
 
     private readonly record struct EmbeddedFileEntry(

@@ -12,7 +12,7 @@ namespace RhinoModifiers.Runtime;
 
 internal sealed class ModifierEngine : IDisposable
 {
-    private const string LogPrefix = "GGH";
+    private const string LogPrefix = "Modifiers";
 
     private readonly Dictionary<uint, DocumentState> _documents = new();
     private readonly Queue<QueuedStack> _queuedStacks = new();

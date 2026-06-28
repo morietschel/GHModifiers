@@ -26,11 +26,9 @@ public sealed class ModifierStackPanel : Panel
     private const int SectionSpacing = 8;
     private const int RowHeaderHorizontalPadding = 4;
     private const int RowHeaderVerticalPadding = 4;
-    private const int DisclosureIconSize = 14;
     private const int StepDetailIndent = 20;
     private const int StepDetailSpacing = 8;
     private const int MaxOutputPreviewCharacters = 40;
-    private const float DisclosureGlyphFontSize = 15f;
 
     private readonly Label _statusLabel;
     private readonly Scrollable _rowsScrollable;

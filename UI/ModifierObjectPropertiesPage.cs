@@ -69,7 +69,7 @@ public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
     private void ShowError(string prefix, Exception ex)
     {
         _panel = null;
-        RhinoApp.WriteLine($"GGH: {prefix} {ex}");
+        RhinoApp.WriteLine($"Modifiers: {prefix} {ex}");
         _host.Content = new Label { Text = $"{prefix} {ex.Message}", Wrap = WrapMode.Word };
     }
 }

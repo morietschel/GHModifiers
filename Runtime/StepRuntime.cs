@@ -19,8 +19,7 @@ namespace RhinoModifiers.Runtime
             Param_Geometry? sceneInputSource,
             IGH_Param? sceneInputParam,
             List<RuntimeInputBinding> inputs,
-            List<RuntimeOutputBinding> outputs,
-            List<RuntimeOutputBinding> geometryOutputs
+            List<RuntimeOutputBinding> outputs
         )
         {
             Path = path;
@@ -31,7 +30,6 @@ namespace RhinoModifiers.Runtime
             SceneInputParam = sceneInputParam;
             Inputs = inputs;
             Outputs = outputs;
-            GeometryOutputs = geometryOutputs;
             LastInputRevision = ulong.MaxValue;
         }
 
@@ -51,8 +49,6 @@ namespace RhinoModifiers.Runtime
 
         public List<RuntimeOutputBinding> Outputs { get; }
 
-        public List<RuntimeOutputBinding> GeometryOutputs { get; }
-
         public ulong LastInputRevision { get; set; }
 
         public ulong LastOutputRevision { get; set; }
@@ -60,8 +56,6 @@ namespace RhinoModifiers.Runtime
         public List<GeometryBase> CachedOutput { get; set; } = new();
 
         public List<StepOutputValue> CachedPublishedOutputs { get; set; } = new();
-
-        public bool HasGeometryOutputs => GeometryOutputs.Count > 0;
 
         public void Dispose()
         {
