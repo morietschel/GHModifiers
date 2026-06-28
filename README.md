@@ -72,7 +72,6 @@ See **[ModifierGuide.md](ModifierGuide.md)** for the full spec. The short versio
 
 | Command | Description |
 |---------|-------------|
-| `GghRefreshSelectedStack` | Re-runs the stack on the current selection |
 
 ## Contributors
 
