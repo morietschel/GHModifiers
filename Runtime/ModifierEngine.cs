@@ -711,57 +711,80 @@ internal sealed class ModifierEngine : IDisposable
             }
         }
 
-        if (
-            !ReplaceManagedObjectGeometry(doc, objectId, evaluatedGeometry[0], out var replaceError)
-        )
-        {
-            message = replaceError;
-            Log(
-                $"ApplyThroughStep failed replacing object geometry. Object={objectId}, Error={replaceError}"
-            );
-            return false;
-        }
-
         var newObjectAttributes = rhinoObject.Attributes.Duplicate();
         newObjectAttributes.UserDictionary.Remove(ModifierStackSpec.UserDictionaryKey);
 
-        for (var i = 1; i < evaluatedGeometry.Count; i++)
+        var undoRecord = doc.BeginUndoRecord("Apply Modifier Stack Through Step");
+
+        try
         {
             if (
-                !TryAddGeometryObject(
+                !ReplaceManagedObjectGeometry(
                     doc,
-                    evaluatedGeometry[i],
-                    newObjectAttributes,
-                    out Guid addedId,
-                    out var addError
+                    objectId,
+                    evaluatedGeometry[0],
+                    out var replaceError
                 )
             )
             {
-                message =
-                    $"Applied base object, but failed to add additional geometry item {i + 1}: {addError}";
+                message = replaceError;
                 Log(
-                    $"ApplyThroughStep partially succeeded. Object={objectId}, Index={i}, Error={addError}"
+                    $"ApplyThroughStep failed replacing object geometry. Object={objectId}, Error={replaceError}"
                 );
                 return false;
             }
-        }
 
-        spec.Steps.RemoveRange(0, stepIndex + 1);
-        if (!ModifierStackStorage.Save(doc, objectId, spec))
+            for (var i = 1; i < evaluatedGeometry.Count; i++)
+            {
+                if (
+                    !TryAddGeometryObject(
+                        doc,
+                        evaluatedGeometry[i],
+                        newObjectAttributes,
+                        out Guid addedId,
+                        out var addError
+                    )
+                )
+                {
+                    message =
+                        $"Applied base object, but failed to add additional geometry item {i + 1}: {addError}";
+                    Log(
+                        $"ApplyThroughStep partially succeeded. Object={objectId}, Index={i}, Error={addError}"
+                    );
+                    return false;
+                }
+            }
+
+            spec.Steps.RemoveRange(0, stepIndex + 1);
+
+            if (!ModifierStackStorage.Save(doc, objectId, spec))
+            {
+                message = "Applied geometry, but failed to update remaining modifier stack.";
+                Log(
+                    $"ApplyThroughStep failed updating stack metadata after apply. Object={objectId}"
+                );
+                return false;
+            }
+
+            ResetStackRuntime(doc, objectId, spec);
+        }
+        finally
         {
-            message = "Applied geometry, but failed to update remaining modifier stack.";
-            Log($"ApplyThroughStep failed updating stack metadata after apply. Object={objectId}");
-            return false;
+            if (undoRecord != 0)
+            {
+                doc.EndUndoRecord(undoRecord);
+            }
         }
 
-        ResetStackRuntime(doc, objectId, spec);
         message =
             stepIndex == 0
                 ? "Applied modifier and removed it from the stack."
                 : $"Applied {stepIndex + 1} modifiers and removed them from the stack.";
+
         Log(
             $"ApplyThroughStep completed. Object={objectId}, AppliedCount={stepIndex + 1}, RemainingSteps={spec.Steps.Count}"
         );
+
         return true;
     }
 
@@ -850,7 +873,9 @@ internal sealed class ModifierEngine : IDisposable
                     }
 
                     message = $"Failed to bake geometry item {i + 1}: {addError}";
-                    Log($"BakeFinalResult add failed. Object={objectId}, Index={i}, Error={addError}");
+                    Log(
+                        $"BakeFinalResult add failed. Object={objectId}, Index={i}, Error={addError}"
+                    );
                     return false;
                 }
 
