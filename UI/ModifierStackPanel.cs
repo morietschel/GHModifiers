@@ -390,8 +390,13 @@ public sealed class ModifierStackPanel : Panel
     private void OnBakeClicked(object? sender, EventArgs e)
     {
         var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            return;
+        }
+
         var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(doc);
-        if (!state.CanEdit || !state.SelectedObjectId.HasValue || doc is null)
+        if (!state.CanEdit || !state.SelectedObjectId.HasValue)
         {
             return;
         }

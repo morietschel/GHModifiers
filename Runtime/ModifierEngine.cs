@@ -732,6 +732,7 @@ internal sealed class ModifierEngine : IDisposable
                     doc,
                     evaluatedGeometry[i],
                     newObjectAttributes,
+                    out Guid addedId,
                     out var addError
                 )
             )
@@ -823,23 +824,44 @@ internal sealed class ModifierEngine : IDisposable
             }
         }
 
-        var newObjectAttributes = rhinoObject.Attributes.Duplicate();
-        newObjectAttributes.UserDictionary.Remove(ModifierStackSpec.UserDictionaryKey);
+        var undoRecord = doc.BeginUndoRecord("Bake Modifier Stack Result");
+        var addedObjectIds = new List<Guid>();
 
-        for (var i = 0; i < evaluatedGeometry.Count; i++)
+        try
         {
-            if (
-                !TryAddGeometryObject(
-                    doc,
-                    evaluatedGeometry[i],
-                    newObjectAttributes,
-                    out var addError
-                )
-            )
+            var newObjectAttributes = rhinoObject.Attributes.Duplicate();
+            newObjectAttributes.UserDictionary.Remove(ModifierStackSpec.UserDictionaryKey);
+
+            for (var i = 0; i < evaluatedGeometry.Count; i++)
             {
-                message = $"Failed to bake geometry item {i + 1}: {addError}";
-                Log($"BakeFinalResult add failed. Object={objectId}, Index={i}, Error={addError}");
-                return false;
+                if (
+                    !TryAddGeometryObject(
+                        doc,
+                        evaluatedGeometry[i],
+                        newObjectAttributes,
+                        out Guid addedId,
+                        out var addError
+                    )
+                )
+                {
+                    foreach (var id in addedObjectIds)
+                    {
+                        doc.Objects.Delete(id, true);
+                    }
+
+                    message = $"Failed to bake geometry item {i + 1}: {addError}";
+                    Log($"BakeFinalResult add failed. Object={objectId}, Index={i}, Error={addError}");
+                    return false;
+                }
+
+                addedObjectIds.Add(addedId);
+            }
+        }
+        finally
+        {
+            if (undoRecord != 0)
+            {
+                doc.EndUndoRecord(undoRecord);
             }
         }
 
@@ -2124,12 +2146,15 @@ internal sealed class ModifierEngine : IDisposable
         RhinoDoc doc,
         GeometryBase geometry,
         ObjectAttributes attributes,
+        out Guid addedId,
         out string error
     )
     {
         error = string.Empty;
+
         var toAdd = geometry.Duplicate();
-        var addedId = toAdd switch
+
+        addedId = toAdd switch
         {
             Rhino.Geometry.Point point => doc.Objects.AddPoint(point.Location, attributes),
             Curve curve => doc.Objects.AddCurve(curve, attributes),
