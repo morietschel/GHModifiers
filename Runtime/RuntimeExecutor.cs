@@ -30,7 +30,7 @@ namespace RhinoModifiers.Runtime;
 /// </remarks>
 internal sealed class RuntimeExecutor : IDisposable
 {
-    private static class HopsGuids
+    public static class HopsGuids
     {
         public static readonly Guid GetString = Guid.Parse("fed87bdd-8327-49cd-949c-09d70f3c345c");
         public static readonly Guid GetPlane = Guid.Parse("88bd0e1d-363a-469f-9104-57d3aac5d6b8");
