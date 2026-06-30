@@ -19,9 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Logo_1.svg" />
-    <EmbeddedResource Include="Logo_2.ico" />
-    <EmbeddedResource Include="Logo_3.ico" />
+    <EmbeddedResource Include="wrench.png" />
 
     <PackageReference Include="RhinoCommon" Version="8.0.23304.9001" ExcludeAssets="runtime" />
     <PackageReference Include="Grasshopper" Version="8.0.23304.9001" ExcludeAssets="runtime" />

@@ -12,7 +12,7 @@ public sealed class ModifierObjectPropertiesPage : ObjectPropertiesPage
 
     public override string EnglishPageTitle => "Object Modifiers";
 
-    public override string PageIconEmbeddedResourceString => "RhinoModifiers.Logo_3.ico";
+    public override string PageIconEmbeddedResourceString => "RhinoModifiers.wrench.png";
 
     public override int Index => int.MaxValue;
 
