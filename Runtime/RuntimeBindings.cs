@@ -76,17 +76,6 @@ namespace RhinoModifiers.Runtime
             Param = param;
         }
 
-        public RuntimeInputBinding(
-            ModifierInputDescriptor descriptor,
-            IGH_Param param,
-            IGH_Param sourceParam
-        )
-        {
-            Descriptor = descriptor;
-            Param = param;
-            SourceParam = sourceParam;
-        }
-
         public RuntimeInputBinding(ModifierInputDescriptor descriptor, GH_NumberSlider slider)
         {
             Descriptor = descriptor;
@@ -103,7 +92,7 @@ namespace RhinoModifiers.Runtime
 
         public IGH_Param? Param { get; }
 
-        public IGH_Param? SourceParam { get; }
+        public IGH_Param? SourceParam { get; internal set; }
 
         public GH_NumberSlider? Slider { get; }
 

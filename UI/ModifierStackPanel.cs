@@ -30,6 +30,11 @@ public sealed class ModifierStackPanel : Panel
     private const int StepDetailSpacing = 8;
     private const int MaxOutputPreviewCharacters = 40;
 
+    // Horizontal inset a message label sits at inside the scrollable, used to cap
+    // its width so long messages wrap instead of overflowing. The cap must be
+    // applied at build time (when the panel is sized); see GetMessageLabelWidth().
+    private const int MessageLabelHorizontalInset = 60;
+
     private readonly Label _statusLabel;
     private readonly Scrollable _rowsScrollable;
     private readonly DropDown _definitionPicker;
@@ -51,6 +56,7 @@ public sealed class ModifierStackPanel : Panel
     private string? _lastPrimarySelectedStepKey;
 
     private bool _isUpdatingDefinitionPicker;
+    private bool _refreshQueued;
 
     private enum InputEditorKind
     {
@@ -61,6 +67,8 @@ public sealed class ModifierStackPanel : Panel
         Toggle,
         Point,
         Geometry,
+        Plane,
+        Line,
         DropDown,
     }
 
@@ -201,6 +209,11 @@ public sealed class ModifierStackPanel : Panel
         };
 
         _rowsScrollable = new Scrollable { ExpandContentWidth = true };
+        // The first RefreshView in the constructor runs before the panel is sized, so
+        // message labels get no width cap; rebuild once the panel is laid out at its real
+        // size (and again on resize) so wrapping labels are capped to the actual width.
+        _rowsScrollable.SizeChanged += (_, _) => QueueRefreshView();
+        LoadComplete += (_, _) => RefreshView();
 
         var pickerRow = new StackLayout
         {
@@ -1356,32 +1369,71 @@ public sealed class ModifierStackPanel : Panel
         RefreshView();
     }
 
-    private static Label CreateMessageLabel(string text, bool isError)
+    private Label CreateMessageLabel(string text, bool isError)
     {
-        return new Label
+        var label = new Label
         {
             Text = text,
             Wrap = WrapMode.Word,
             TextColor = isError ? Eto.Drawing.Colors.OrangeRed : Eto.Drawing.Colors.Gray,
         };
+        ApplyMessageLabelWidth(label);
+        return label;
     }
 
-    private static Control CreateCenteredMessage(string text)
+    private Control CreateCenteredMessage(string text)
     {
+        var label = new Label
+        {
+            Text = text,
+            Wrap = WrapMode.Word,
+            TextAlignment = TextAlignment.Center,
+        };
+        ApplyMessageLabelWidth(label);
+
         return new StackLayout
         {
             Orientation = Orientation.Vertical,
             Padding = new Padding(16, 56, 16, 0),
-            Items =
-            {
-                new Label
-                {
-                    Text = text,
-                    Wrap = WrapMode.Word,
-                    TextAlignment = TextAlignment.Center,
-                },
-            },
+            Items = { label },
         };
+    }
+
+    private void ApplyMessageLabelWidth(Label label)
+    {
+        // Cap the label's width to the panel's available width so long messages wrap
+        // instead of overflowing the scrollable. Only applied once the panel is sized:
+        // a width smaller than the real layout width makes Eto/WPF measure the label at
+        // a different width than it is arranged at, which inflates the vertical scroll
+        // extent (extra trailing space that grows with the number of messages).
+        var width = GetMessageLabelWidth();
+        if (width > 0)
+        {
+            label.Width = width;
+        }
+    }
+
+    private int GetMessageLabelWidth()
+    {
+        var clientWidth = _rowsScrollable.ClientSize.Width;
+        return clientWidth > MessageLabelHorizontalInset
+            ? clientWidth - MessageLabelHorizontalInset
+            : 0;
+    }
+
+    private void QueueRefreshView()
+    {
+        if (_refreshQueued)
+        {
+            return;
+        }
+
+        _refreshQueued = true;
+        Application.Instance?.AsyncInvoke(() =>
+        {
+            _refreshQueued = false;
+            RefreshView();
+        });
     }
 
     private Control CreateInputRow(
@@ -1395,7 +1447,13 @@ public sealed class ModifierStackPanel : Panel
 
         return editorKind switch
         {
-            InputEditorKind.Toggle => CreateToggleInputRow(objectId, step, input, toolTip),
+            InputEditorKind.Toggle => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateToggleEditor(objectId, step, input),
+                toolTip
+            ),
             InputEditorKind.Slider => CreateInputBlock(
                 objectId,
                 step,
@@ -1424,6 +1482,20 @@ public sealed class ModifierStackPanel : Panel
                 CreateGeometryEditor(objectId, step, input),
                 AppendToolTip(toolTip, GetGeometryDisplayText(input))
             ),
+            InputEditorKind.Plane => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreatePlaneEditor(objectId, step, input),
+                AppendToolTip(toolTip, GetPlaneDisplayText(input.SerializedValue))
+            ),
+            InputEditorKind.Line => CreateInputBlock(
+                objectId,
+                step,
+                input,
+                CreateLineEditor(objectId, step, input),
+                AppendToolTip(toolTip, GetLineDisplayText(input.SerializedValue))
+            ),
             InputEditorKind.DropDown => CreateInputBlock(
                 objectId,
                 step,
@@ -1448,39 +1520,21 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
-    private Control CreateToggleInputRow(
+    private Control CreateToggleEditor(
         Guid objectId,
         ModifierStepPanelState step,
-        ModifierStepInputPanelState input,
-        string? toolTip
+        ModifierStepInputPanelState input
     )
     {
         var toggle = new CheckBox
         {
             Checked = bool.TryParse(input.SerializedValue, out var boolValue) && boolValue,
             Enabled = IsInputEnabled(step, input),
-            ToolTip = toolTip,
         };
 
         toggle.CheckedChanged += (_, _) =>
             CommitInput(objectId, step.Index, input, toggle.Checked == true ? "true" : "false");
-
-        var block = new StackLayout
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 4,
-            Items =
-            {
-                new StackLayoutItem(
-                    CreateInputHeader(objectId, step, input, toolTip),
-                    HorizontalAlignment.Stretch
-                ),
-                toggle,
-            },
-        };
-
-        AddInputMessages(block, input);
-        return block;
+        return toggle;
     }
 
     private Control CreateInputBlock(
@@ -1524,43 +1578,7 @@ public sealed class ModifierStackPanel : Panel
         return block;
     }
 
-    private Control CreateInputHeader(
-        Guid objectId,
-        ModifierStepPanelState step,
-        ModifierStepInputPanelState input,
-        string? toolTip
-    )
-    {
-        var row = new StackLayout
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            Items =
-            {
-                new StackLayoutItem(
-                    new Label
-                    {
-                        Text = input.Label,
-                        Wrap = WrapMode.Word,
-                        ToolTip = toolTip,
-                    },
-                    true
-                ),
-                new StackLayoutItem(
-                    CreateInputLinkButton(objectId, step, input),
-                    HorizontalAlignment.Right
-                ),
-            },
-        };
-
-        return new StackLayout
-        {
-            Orientation = Orientation.Vertical,
-            Items = { new StackLayoutItem(row, HorizontalAlignment.Stretch) },
-        };
-    }
-
-    private static void AddInputMessages(StackLayout block, ModifierStepInputPanelState input)
+    private void AddInputMessages(StackLayout block, ModifierStepInputPanelState input)
     {
         if (!string.IsNullOrWhiteSpace(input.LinkStatusMessage))
         {
@@ -1677,6 +1695,8 @@ public sealed class ModifierStackPanel : Panel
             ModifierIoKind.Number => InputEditorKind.Number,
             ModifierIoKind.Point => InputEditorKind.Point,
             ModifierIoKind.Geometry => InputEditorKind.Geometry,
+            ModifierIoKind.Plane => InputEditorKind.Plane,
+            ModifierIoKind.Line => InputEditorKind.Line,
             ModifierIoKind.ValueList => InputEditorKind.DropDown,
             ModifierIoKind.String when input.IsFilePath => InputEditorKind.FilePath,
             _ => InputEditorKind.Text,
@@ -1725,6 +1745,20 @@ public sealed class ModifierStackPanel : Panel
             CommitInput(objectId, step.Index, input, serializedValue);
         }
 
+        var valueLabel = new Label
+        {
+            Text = FormatDisplayNumber(initialValue, input.DecimalPlaces),
+            ToolTip = sliderToolTip,
+            Width = 72,
+            TextAlignment = TextAlignment.Right,
+        };
+
+        slider.ValueChanged += (_, _) =>
+            valueLabel.Text = FormatDisplayNumber(
+                configuration.GetValue(slider.Value),
+                input.DecimalPlaces
+            );
+
         slider.MouseUp += (_, _) => CommitSliderValue();
         slider.LostFocus += (_, _) => CommitSliderValue();
 
@@ -1745,6 +1779,7 @@ public sealed class ModifierStackPanel : Panel
                     Text = FormatDisplayNumber(configuration.Maximum, input.DecimalPlaces),
                     ToolTip = sliderToolTip,
                 },
+                valueLabel,
             },
         };
     }
@@ -2046,6 +2081,110 @@ public sealed class ModifierStackPanel : Panel
         return pickPointButton;
     }
 
+    private static Control CreatePlaneEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
+    {
+        var pickPlaneButton = new Button
+        {
+            Text = string.IsNullOrWhiteSpace(input.SerializedValue) ? "Set Plane" : "Update Plane",
+            Enabled = IsInputEnabled(step, input),
+            ToolTip = GetPlaneDisplayText(input.SerializedValue),
+        };
+
+        pickPlaneButton.Click += (_, _) =>
+        {
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null)
+            {
+                return;
+            }
+
+            var rc = RhinoGet.GetPlane(out var plane);
+            if (rc != Rhino.Commands.Result.Success)
+            {
+                return;
+            }
+
+            var serializedValue = SerializePlane(plane);
+            if (
+                !RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(
+                    doc,
+                    objectId,
+                    step.Index,
+                    input.Id,
+                    serializedValue,
+                    out var message
+                )
+            )
+            {
+                MessageBox.Show(message, MessageBoxType.Error);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                RhinoApp.WriteLine(message);
+            }
+        };
+
+        return pickPlaneButton;
+    }
+
+    private static Control CreateLineEditor(
+        Guid objectId,
+        ModifierStepPanelState step,
+        ModifierStepInputPanelState input
+    )
+    {
+        var pickLineButton = new Button
+        {
+            Text = string.IsNullOrWhiteSpace(input.SerializedValue) ? "Set Line" : "Update Line",
+            Enabled = IsInputEnabled(step, input),
+            ToolTip = GetLineDisplayText(input.SerializedValue),
+        };
+
+        pickLineButton.Click += (_, _) =>
+        {
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null)
+            {
+                return;
+            }
+
+            var rc = RhinoGet.GetLine(out var line);
+            if (rc != Rhino.Commands.Result.Success)
+            {
+                return;
+            }
+
+            var serializedValue = SerializeLine(line);
+            if (
+                !RhinoModifiersPlugin.Instance.Engine.SetStepInputValue(
+                    doc,
+                    objectId,
+                    step.Index,
+                    input.Id,
+                    serializedValue,
+                    out var message
+                )
+            )
+            {
+                MessageBox.Show(message, MessageBoxType.Error);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                RhinoApp.WriteLine(message);
+            }
+        };
+
+        return pickLineButton;
+    }
+
     private static Control CreateGeometryEditor(
         Guid objectId,
         ModifierStepPanelState step,
@@ -2273,6 +2412,20 @@ public sealed class ModifierStackPanel : Panel
             : $"Current point: {serializedValue}";
     }
 
+    private static string GetPlaneDisplayText(string serializedValue)
+    {
+        return string.IsNullOrWhiteSpace(serializedValue)
+            ? "No plane set."
+            : $"Current plane: {serializedValue}";
+    }
+
+    private static string GetLineDisplayText(string serializedValue)
+    {
+        return string.IsNullOrWhiteSpace(serializedValue)
+            ? "No line set."
+            : $"Current line: {serializedValue}";
+    }
+
     private static string GetGeometryDisplayText(ModifierStepInputPanelState input)
     {
         if (input.HasLink)
@@ -2346,6 +2499,20 @@ public sealed class ModifierStackPanel : Panel
     {
         return FormattableString.Invariant(
             $"{point.X:0.###############},{point.Y:0.###############},{point.Z:0.###############}"
+        );
+    }
+
+    private static string SerializeLine(Line line)
+    {
+        return FormattableString.Invariant(
+            $"{line.From.X:0.###############},{line.From.Y:0.###############},{line.From.Z:0.###############};{line.To.X:0.###############},{line.To.Y:0.###############},{line.To.Z:0.###############}"
+        );
+    }
+
+    private static string SerializePlane(Plane plane)
+    {
+        return FormattableString.Invariant(
+            $"{plane.Origin.X:0.###############},{plane.Origin.Y:0.###############},{plane.Origin.Z:0.###############};{plane.XAxis.X:0.###############},{plane.XAxis.Y:0.###############},{plane.XAxis.Z:0.###############};{plane.YAxis.X:0.###############},{plane.YAxis.Y:0.###############},{plane.YAxis.Z:0.###############}"
         );
     }
 

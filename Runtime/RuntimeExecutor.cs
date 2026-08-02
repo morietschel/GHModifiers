@@ -406,12 +406,36 @@ internal sealed class RuntimeExecutor : IDisposable
 
         Log($"Loading Grasshopper definition. Path={resolvedPath}");
         var document = LoadDefinitionDocument(resolvedPath);
-        var template = new DefinitionTemplate(
-            resolvedPath,
-            resolvedLastWrite,
-            document,
-            CreateDefinitionContract(document)
-        );
+        var contract = CreateDefinitionContract(document);
+
+        // Inputs wired to components (e.g. a plane plugged into Get Plane) only expose
+        // their value once the document is solved, so solve once to surface those
+        // definition defaults in the panel. A throwaway copy is solved so the cached
+        // template keeps its pristine, unsolved state for step-runtime duplication.
+        if (
+            contract.Inputs.Any(input =>
+                input.HasDefaultValue && string.IsNullOrWhiteSpace(input.DefaultSerializedValue)
+            )
+        )
+        {
+            GH_Document? solvedCopy = null;
+            try
+            {
+                solvedCopy = GH_Document.DuplicateDocument(document);
+                solvedCopy.NewSolution(true, GH_SolutionMode.Silent);
+                contract = CreateDefinitionContract(solvedCopy);
+            }
+            catch (Exception ex)
+            {
+                Log($"Definition default solve failed. Path={resolvedPath}, {ex.Message}");
+            }
+            finally
+            {
+                solvedCopy?.Dispose();
+            }
+        }
+
+        var template = new DefinitionTemplate(resolvedPath, resolvedLastWrite, document, contract);
         _definitionCache[resolvedPath] = template;
         Log($"Definition template cached. Path={resolvedPath}, LastWriteUtc={resolvedLastWrite:O}");
         return template;
@@ -528,10 +552,10 @@ internal sealed class RuntimeExecutor : IDisposable
             {
                 continue;
             }
-            // if it is a Hops/slider/value list input component, create an input descriptor
+            // if it is a Hops input component, create an input descriptor
             else if (IsInput(objectComponentGuid))
             {
-                ModifierInputDescriptor inputDescriptor = CreateInputDescriptor(
+                ModifierInputDescriptor inputDescriptor = CreateHopsInputDescriptor(
                     documentObject,
                     objectComponentGuid
                 );
@@ -557,15 +581,13 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     /// <summary>
-    /// Determines whether a given component GUID corresponds to a known Hops input component or a supported native input component (slider, value list).
+    /// Determines whether a given component GUID corresponds to a known Hops input component.
     /// </summary>
     /// <param name="componentGuid"></param>
     /// <returns></returns>
     private static bool IsInput(Guid componentGuid)
     {
         return HopsInputComponentGuids.Contains(componentGuid);
-        // || componentGuid == typeof(GH_NumberSlider).GUID
-        // || componentGuid == typeof(GH_ValueList).GUID;
     }
 
     /// <summary>
@@ -578,64 +600,16 @@ internal sealed class RuntimeExecutor : IDisposable
         return HopsOutputComponentGuids.Contains(componentGuid);
     }
 
-    private static ModifierInputDescriptor CreateInputDescriptor(
-        IGH_DocumentObject documentObject,
-        Guid componentGuid
-    )
+    /// <summary>
+    /// Whether a Get Geometry param is the stack's main geometry ingestor: its label
+    /// follows the GeomIn/GeoIn convention, so it inherits the previous modifier's
+    /// output geometry instead of acting as a plain geometry input.
+    /// </summary>
+    private static bool IsSceneGeometryParam(IGH_Param param)
     {
-        ModifierInputDescriptor descriptor;
-
-        // Checks if special non-hops case, if not is hops
-        if (documentObject is GH_NumberSlider slider)
-        {
-            descriptor = new ModifierInputDescriptor(
-                slider.InstanceGuid,
-                slider.InstanceGuid.ToString("D"),
-                slider.NickName,
-                slider.Description ?? string.Empty,
-                ModifierIoKind.NumberSlider,
-                SerializeNumber(slider.CurrentValue),
-                true,
-                false,
-                false,
-                (double)slider.Slider.Minimum,
-                (double)slider.Slider.Maximum,
-                slider.Slider.Type == GH_SliderAccuracy.Float ? slider.Slider.DecimalPlaces : 0
-            );
-
-            return descriptor;
-        }
-        else if (documentObject is GH_ValueList valueList)
-        {
-            var selectedIndex = valueList.ListItems.FindIndex(item => item.Selected);
-            if (selectedIndex < 0)
-                selectedIndex = 0;
-            descriptor = new ModifierInputDescriptor(
-                valueList.InstanceGuid,
-                valueList.InstanceGuid.ToString("D"),
-                valueList.NickName,
-                valueList.Description ?? string.Empty,
-                ModifierIoKind.ValueList,
-                selectedIndex.ToString(CultureInfo.InvariantCulture),
-                true,
-                false,
-                true,
-                null,
-                null,
-                0
-            )
-            {
-                ValueListItems = valueList.ListItems.ConvertAll(item => item.Name),
-            };
-
-            return descriptor;
-        }
-        else
-        {
-            descriptor = CreateHopsInputDescriptor(documentObject, componentGuid);
-
-            return descriptor;
-        }
+        var label = GetDisplayLabel(param);
+        return label.Equals("GeomIn", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("GeoIn", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ModifierInputDescriptor CreateHopsInputDescriptor(
@@ -666,11 +640,41 @@ internal sealed class RuntimeExecutor : IDisposable
             ),
         };
 
+        // A slider wired into a numeric or string Get component is exposed as a
+        // slider input: the panel shows a slider and edits drive the slider directly.
+        if (
+            kind is ModifierIoKind.Number or ModifierIoKind.String
+            && param.Sources.OfType<GH_NumberSlider>().FirstOrDefault() is { } slider
+        )
+        {
+            return CreateSliderInputDescriptor(param, slider);
+        }
+
+        // A value list wired into a Get component is exposed as a value list input:
+        // the panel shows the item dropdown and edits select an item.
+        if (
+            kind is ModifierIoKind.Number or ModifierIoKind.String or ModifierIoKind.Boolean
+            && param.Sources.OfType<GH_ValueList>().FirstOrDefault() is { } valueList
+            && valueList.ListItems.Count > 0
+        )
+        {
+            return CreateValueListInputDescriptor(param, valueList);
+        }
+
         var hasDefaultValue = TryReadDefaultSerializedValue(
             param,
             kind,
             out var defaultSerializedValue
         );
+
+        // A wired source (e.g. a panel feeding the Get component) provides the
+        // definition's default value, so the input is not missing even without a
+        // stored default on the parameter itself.
+        if (!hasDefaultValue && param.Sources.Count > 0)
+        {
+            hasDefaultValue = true;
+        }
+
         var minimum = TryGetNumericProperty(param, "Minimum");
         var maximum = TryGetNumericProperty(param, "Maximum");
 
@@ -679,13 +683,65 @@ internal sealed class RuntimeExecutor : IDisposable
             kind,
             hasDefaultValue,
             defaultSerializedValue,
-            usesSceneGeometryWhenBlank: kind == ModifierIoKind.Geometry,
+            usesSceneGeometryWhenBlank: kind == ModifierIoKind.Geometry
+                && IsSceneGeometryParam(param),
             isOptional: param.Optional,
             isFilePath: kind == ModifierIoKind.String && componentGuid == HopsGuids.GetFilePath,
             minimum: minimum,
             maximum: maximum,
             decimalPlaces: GetDefaultDecimalPlaces(param, kind)
         );
+    }
+
+    private static ModifierInputDescriptor CreateSliderInputDescriptor(
+        IGH_Param param,
+        GH_NumberSlider slider
+    )
+    {
+        return new ModifierInputDescriptor(
+            param.InstanceGuid,
+            param.InstanceGuid.ToString("D"),
+            GetDisplayLabel(param),
+            param.Description ?? string.Empty,
+            ModifierIoKind.NumberSlider,
+            SerializeNumber(slider.CurrentValue),
+            true,
+            false,
+            param.Optional,
+            (double)slider.Slider.Minimum,
+            (double)slider.Slider.Maximum,
+            slider.Slider.Type == GH_SliderAccuracy.Float ? slider.Slider.DecimalPlaces : 0
+        );
+    }
+
+    private static ModifierInputDescriptor CreateValueListInputDescriptor(
+        IGH_Param param,
+        GH_ValueList valueList
+    )
+    {
+        var selectedIndex = valueList.ListItems.FindIndex(item => item.Selected);
+        if (selectedIndex < 0)
+        {
+            selectedIndex = 0;
+        }
+
+        return new ModifierInputDescriptor(
+            param.InstanceGuid,
+            param.InstanceGuid.ToString("D"),
+            GetDisplayLabel(param),
+            param.Description ?? string.Empty,
+            ModifierIoKind.ValueList,
+            selectedIndex.ToString(CultureInfo.InvariantCulture),
+            true,
+            false,
+            param.Optional,
+            null,
+            null,
+            0
+        )
+        {
+            ValueListItems = valueList.ListItems.ConvertAll(item => item.Name),
+        };
     }
 
     private static double? TryGetNumericProperty(object target, string propertyName)
@@ -848,9 +904,146 @@ internal sealed class RuntimeExecutor : IDisposable
     )
     {
         serializedValue = string.Empty;
-        var first = EnumeratePersistentData(param).FirstOrDefault();
+
+        if (param.Sources.Count == 0)
+        {
+            // Unwired: the param's own stored value is the default.
+            return TryReadStoredDefault(param, kind, out serializedValue);
+        }
+
+        // Wired: the default is whatever actually arrives at the param. Special
+        // source types (sliders / value lists) are handled by dedicated descriptors
+        // before this point; panels keep their text in a dedicated field rather than
+        // standard param data, so read that directly. Anything else resolves once
+        // the document is solved, and the incoming value then lives on the param's
+        // own volatile data — never dig into arbitrary source components.
+        if (TryReadPanelSourceText(param, kind, out serializedValue))
+        {
+            return true;
+        }
+
+        return TryReadFirstData(
+            EnumerateParamData(param, "VolatileData"),
+            kind,
+            out serializedValue
+        );
+    }
+
+    private static bool TryReadPanelSourceText(
+        IGH_Param param,
+        ModifierIoKind kind,
+        out string serializedValue
+    )
+    {
+        foreach (var source in param.Sources)
+        {
+            if (
+                source is GH_Panel panel
+                && !string.IsNullOrWhiteSpace(panel.UserText)
+                && TrySerializePanelText(panel.UserText, kind, out serializedValue)
+            )
+            {
+                return true;
+            }
+        }
+
+        serializedValue = string.Empty;
+        return false;
+    }
+
+    private static bool TrySerializePanelText(
+        string text,
+        ModifierIoKind kind,
+        out string serializedValue
+    )
+    {
+        serializedValue = string.Empty;
+        switch (kind)
+        {
+            case ModifierIoKind.String:
+                serializedValue = text;
+                return true;
+            case ModifierIoKind.Number:
+                if (
+                    double.TryParse(
+                        text,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out var numberValue
+                    )
+                )
+                {
+                    serializedValue = SerializeNumber(numberValue);
+                    return true;
+                }
+                return false;
+            case ModifierIoKind.Boolean:
+                if (bool.TryParse(text, out var booleanValue))
+                {
+                    serializedValue = booleanValue
+                        ? bool.TrueString.ToLowerInvariant()
+                        : bool.FalseString.ToLowerInvariant();
+                    return true;
+                }
+                return false;
+            case ModifierIoKind.Point:
+                if (!TryParsePoint(text, out var pointValue))
+                {
+                    return false;
+                }
+                serializedValue = SerializePoint(pointValue);
+                return true;
+            case ModifierIoKind.Line:
+                if (!TryParseLine(text, out var lineValue))
+                {
+                    return false;
+                }
+                serializedValue = SerializeLine(lineValue);
+                return true;
+            case ModifierIoKind.Plane:
+                if (!TryParsePlane(text, out var planeValue))
+                {
+                    return false;
+                }
+                serializedValue = SerializePlane(planeValue);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryReadStoredDefault(
+        IGH_Param param,
+        ModifierIoKind kind,
+        out string serializedValue
+    )
+    {
+        if (
+            TryReadFirstData(EnumerateParamData(param, "PersistentData"), kind, out serializedValue)
+        )
+        {
+            return true;
+        }
+
+        // After a solve, values arriving through wired sources live in the volatile
+        // data (e.g. a plane component feeding Get Plane).
+        return TryReadFirstData(
+            EnumerateParamData(param, "VolatileData"),
+            kind,
+            out serializedValue
+        );
+    }
+
+    private static bool TryReadFirstData(
+        IEnumerable<IGH_Goo> goos,
+        ModifierIoKind kind,
+        out string serializedValue
+    )
+    {
+        var first = goos.FirstOrDefault();
         if (first is null)
         {
+            serializedValue = string.Empty;
             return false;
         }
 
@@ -871,29 +1064,39 @@ internal sealed class RuntimeExecutor : IDisposable
                     $"Modifier input '{descriptor.Label}' could not be found in the duplicated document."
                 );
 
-            if (documentObject is GH_NumberSlider slider)
-            {
-                bindings.Add(new RuntimeInputBinding(descriptor, slider));
-                continue;
-            }
-
-            if (documentObject is GH_ValueList valueList)
-            {
-                bindings.Add(new RuntimeInputBinding(descriptor, valueList));
-                continue;
-            }
-
             if (documentObject is IGH_Param param)
             {
                 var isHopsInput = HopsInputComponentGuids.Contains(documentObject.ComponentGuid);
 
                 if (isHopsInput)
                 {
-                    var sourceParam = CreateSourceParamForKind(descriptor.Kind);
-                    document.AddObject(sourceParam, false);
-                    param.RemoveAllSources();
-                    param.AddSource(sourceParam);
-                    bindings.Add(new RuntimeInputBinding(descriptor, param, sourceParam));
+                    // A slider or value list wired into the Get component binds like
+                    // the legacy controls: the control's own value is the default and
+                    // panel edits drive the control directly. The descriptor kind
+                    // records which control is attached, and every consumer binds to
+                    // the shared control (matching how the definition is wired).
+                    if (
+                        descriptor.Kind == ModifierIoKind.NumberSlider
+                        && param.Sources.OfType<GH_NumberSlider>().FirstOrDefault()
+                            is { } feedingSlider
+                    )
+                    {
+                        bindings.Add(new RuntimeInputBinding(descriptor, feedingSlider));
+                        continue;
+                    }
+
+                    if (
+                        descriptor.Kind == ModifierIoKind.ValueList
+                        && param.Sources.OfType<GH_ValueList>().FirstOrDefault() is { } feedingList
+                    )
+                    {
+                        bindings.Add(new RuntimeInputBinding(descriptor, feedingList));
+                        continue;
+                    }
+
+                    // Otherwise bind to the param itself so the definition's wiring or
+                    // stored default keeps flowing; injection happens lazily at solve time.
+                    bindings.Add(new RuntimeInputBinding(descriptor, param));
                 }
                 else
                 {
@@ -1005,6 +1208,7 @@ internal sealed class RuntimeExecutor : IDisposable
             if (
                 !ApplyInputBinding(
                     doc,
+                    runtime.Document,
                     binding,
                     stepSpec,
                     stepIndex,
@@ -1128,8 +1332,37 @@ internal sealed class RuntimeExecutor : IDisposable
         return param;
     }
 
+    /// <summary>
+    /// Returns the parameter to inject values into, detaching any definition wiring and
+    /// wiring in a fresh runtime source parameter on first use so the injected value wins
+    /// over the definition's default. The result is memoized on the binding.
+    /// </summary>
+    private static IGH_Param? EnsureInjectableParam(
+        RuntimeInputBinding binding,
+        GH_Document document
+    )
+    {
+        if (binding.SourceParam is not null)
+        {
+            return binding.SourceParam;
+        }
+
+        if (binding.Param is null)
+        {
+            return null;
+        }
+
+        var sourceParam = CreateSourceParamForKind(binding.Descriptor.Kind);
+        document.AddObject(sourceParam, false);
+        binding.Param.RemoveAllSources();
+        binding.Param.AddSource(sourceParam);
+        binding.SourceParam = sourceParam;
+        return sourceParam;
+    }
+
     private bool ApplyInputBinding(
         RhinoDoc doc,
+        GH_Document document,
         RuntimeInputBinding binding,
         ModifierStepSpec stepSpec,
         int stepIndex,
@@ -1145,6 +1378,7 @@ internal sealed class RuntimeExecutor : IDisposable
         {
             return TryApplyLinkedInput(
                 doc,
+                document,
                 binding,
                 stepIndex,
                 allSteps,
@@ -1191,45 +1425,47 @@ internal sealed class RuntimeExecutor : IDisposable
         if (binding.ValueList is not null)
         {
             if (
-                hasExplicitValue
-                && int.TryParse(
-                    serializedValue,
-                    NumberStyles.Integer,
-                    CultureInfo.InvariantCulture,
-                    out var selectedIndex
-                )
-                && selectedIndex >= 0
-                && selectedIndex < binding.ValueList.ListItems.Count
+                hasExplicitValue && !TryApplyValueListSelection(binding, serializedValue, out error)
             )
             {
-                binding.ValueList.SelectItem(selectedIndex);
+                return false;
             }
 
             return true;
         }
 
-        var targetParam = binding.SourceParam ?? binding.Param;
+        if (!hasExplicitValue)
+        {
+            // No user value: leave the definition's wiring / stored default untouched.
+            if (!binding.Descriptor.UsesSceneGeometryWhenBlank)
+            {
+                return true;
+            }
 
+            var sceneTarget = EnsureInjectableParam(binding, document);
+            if (sceneTarget is null)
+            {
+                error =
+                    $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
+                return false;
+            }
+
+            return TryAppendGeometry(sceneTarget, currentGeometry, out error);
+        }
+
+        // User value: detach the definition's default so our injected value wins.
+        var targetParam = EnsureInjectableParam(binding, document);
         if (targetParam is null)
         {
             error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
             return false;
         }
 
-        if (!hasExplicitValue)
-        {
-            if (binding.Descriptor.UsesSceneGeometryWhenBlank)
-            {
-                return TryAppendGeometry(targetParam, currentGeometry, out error);
-            }
-
-            return true;
-        }
-
         ClearParamData(targetParam);
         switch (binding.Descriptor.Kind)
         {
             case ModifierIoKind.Number:
+            case ModifierIoKind.NumberSlider:
                 if (
                     !double.TryParse(
                         serializedValue,
@@ -1353,6 +1589,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
     private bool TryApplyLinkedInput(
         RhinoDoc doc,
+        GH_Document document,
         RuntimeInputBinding binding,
         int stepIndex,
         IReadOnlyList<ModifierStepSpec> allSteps,
@@ -1364,7 +1601,7 @@ internal sealed class RuntimeExecutor : IDisposable
         error = string.Empty;
         if (inputLink.SourceKind == ModifierInputLinkSourceKind.ObjectPreview)
         {
-            return TryApplyObjectPreviewInput(doc, binding, inputLink, out error);
+            return TryApplyObjectPreviewInput(doc, document, binding, inputLink, out error);
         }
 
         if (
@@ -1394,7 +1631,7 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        var targetParam = binding.SourceParam ?? binding.Param;
+        var targetParam = EnsureInjectableParam(binding, document);
         if (targetParam is null)
         {
             error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
@@ -1413,6 +1650,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
     private bool TryApplyObjectPreviewInput(
         RhinoDoc doc,
+        GH_Document document,
         RuntimeInputBinding binding,
         ModifierInputLinkSpec inputLink,
         out string error
@@ -1462,7 +1700,7 @@ internal sealed class RuntimeExecutor : IDisposable
             return false;
         }
 
-        var targetParam = binding.SourceParam ?? binding.Param;
+        var targetParam = EnsureInjectableParam(binding, document);
         if (targetParam is null)
         {
             error = $"Input '{binding.Descriptor.Label}' is not bound to a Grasshopper parameter.";
@@ -1758,6 +1996,89 @@ internal sealed class RuntimeExecutor : IDisposable
             .ToArray();
     }
 
+    private static bool TryApplyValueListSelection(
+        RuntimeInputBinding binding,
+        string serializedValue,
+        out string error
+    )
+    {
+        error = string.Empty;
+        var valueList = binding.ValueList!;
+
+        // ValueList-kind inputs store the selected index; other kinds store a typed
+        // value that must match one of the list items.
+        if (binding.Descriptor.Kind == ModifierIoKind.ValueList)
+        {
+            if (
+                int.TryParse(
+                    serializedValue,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var selectedIndex
+                )
+                && selectedIndex >= 0
+                && selectedIndex < valueList.ListItems.Count
+            )
+            {
+                valueList.SelectItem(selectedIndex);
+            }
+
+            return true;
+        }
+
+        var index = valueList.ListItems.FindIndex(item =>
+            item.Name.Equals(serializedValue, StringComparison.OrdinalIgnoreCase)
+            || (
+                TryFormatListItemValue(item.Value, out var itemValueText)
+                && itemValueText.Equals(serializedValue, StringComparison.OrdinalIgnoreCase)
+            )
+        );
+
+        if (
+            index < 0
+            && double.TryParse(
+                serializedValue,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var typedValue
+            )
+        )
+        {
+            index = valueList.ListItems.FindIndex(item =>
+                TryFormatListItemValue(item.Value, out var itemValueText)
+                && double.TryParse(
+                    itemValueText,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out var itemValue
+                )
+                && Math.Abs(itemValue - typedValue) < 1e-9
+            );
+        }
+
+        if (index < 0)
+        {
+            error = $"Input '{binding.Descriptor.Label}' does not match any value list item.";
+            return false;
+        }
+
+        valueList.SelectItem(index);
+        return true;
+    }
+
+    private static bool TryFormatListItemValue(IGH_Goo goo, out string value)
+    {
+        value = goo switch
+        {
+            GH_Number number => number.Value.ToString(CultureInfo.InvariantCulture),
+            GH_Integer integer => integer.Value.ToString(CultureInfo.InvariantCulture),
+            GH_String text => text.Value,
+            _ => goo.ToString() ?? string.Empty,
+        };
+
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
     private static bool TrySetLinkedSliderValue(
         RuntimeInputBinding binding,
         StepOutputValue sourceOutputValue,
@@ -1810,6 +2131,7 @@ internal sealed class RuntimeExecutor : IDisposable
         switch (kind)
         {
             case ModifierIoKind.Number:
+            case ModifierIoKind.NumberSlider:
                 foreach (var publishedValue in sourceOutputValue.Values)
                 {
                     if (!TryConvertToDouble(publishedValue, out var numberValue))
@@ -2425,11 +2747,11 @@ internal sealed class RuntimeExecutor : IDisposable
         return string.IsNullOrWhiteSpace(description) ? note : $"{description} {note}";
     }
 
-    private static IEnumerable<IGH_Goo> EnumeratePersistentData(IGH_Param param)
+    private static IEnumerable<IGH_Goo> EnumerateParamData(IGH_Param param, string propertyName)
     {
-        var persistentData = param.GetType().GetProperty("PersistentData")?.GetValue(param);
-        var allData = persistentData?.GetType().GetMethod("AllData", new[] { typeof(bool) });
-        if (allData?.Invoke(persistentData, new object[] { true }) is not IEnumerable enumerable)
+        var data = param.GetType().GetProperty(propertyName)?.GetValue(param);
+        var allData = data?.GetType().GetMethod("AllData", new[] { typeof(bool) });
+        if (allData?.Invoke(data, new object[] { true }) is not IEnumerable enumerable)
         {
             yield break;
         }

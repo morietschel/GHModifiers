@@ -1,9 +1,9 @@
 using System;
-using RhinoModifiers.Runtime;
-using RhinoModifiers.UI;
 using Rhino;
 using Rhino.PlugIns;
 using Rhino.UI;
+using RhinoModifiers.Runtime;
+using RhinoModifiers.UI;
 
 namespace RhinoModifiers
 {
@@ -23,7 +23,7 @@ namespace RhinoModifiers
         {
             Instance = this;
         }
-        
+
         ///<summary>Gets the only instance of the RhinoModifiersPlugin plug-in.</summary>
         public static RhinoModifiersPlugin Instance { get; private set; } = null!;
 
