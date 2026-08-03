@@ -513,6 +513,59 @@ internal sealed class ModifierEngine : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Wraps the selected sibling nodes in a new group placed at the first selected
+    /// node's position, and returns the new group's id.
+    /// </summary>
+    public bool GroupNodes(
+        RhinoDoc doc,
+        Guid objectId,
+        IReadOnlyList<Guid> nodeIds,
+        out Guid groupNodeId,
+        out string message
+    )
+    {
+        groupNodeId = Guid.Empty;
+        message = string.Empty;
+        Log($"GroupNodes requested. Object={objectId}, Count={nodeIds?.Count ?? 0}");
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            message = "Selected object no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        if (
+            !stack.TryGroupNodes(
+                nodeIds ?? Array.Empty<Guid>(),
+                out groupNodeId,
+                out var groupError
+            )
+        )
+        {
+            message = groupError;
+            Log(message);
+            return false;
+        }
+
+        if (!ModifierStackStorage.Save(doc, objectId, spec))
+        {
+            message = "Failed to update the modifier stack.";
+            Log(message);
+            return false;
+        }
+
+        var start = stack.GetLeafRangeStart(groupNodeId, out _);
+        InvalidateStackFromStep(doc, objectId, spec, start);
+        message = "Grouped selected items.";
+        Log(message);
+        return true;
+    }
+
     public static bool OpenModifierDefinitionInGrasshopper(string path, out string message)
     {
         message = string.Empty;

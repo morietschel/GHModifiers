@@ -380,6 +380,97 @@ internal sealed class ModifierStack
     }
 
     /// <summary>
+    /// Wraps two or more sibling nodes in a new group placed at the first selected
+    /// node's position. All nodes must share the same parent; the selected nodes keep
+    /// their relative order inside the new group.
+    /// </summary>
+    public bool TryGroupNodes(IReadOnlyList<Guid> nodeIds, out Guid groupNodeId, out string error)
+    {
+        groupNodeId = Guid.Empty;
+        error = string.Empty;
+        if (nodeIds is null)
+        {
+            error = "Select at least two items to group.";
+            return false;
+        }
+
+        var seen = new HashSet<Guid>();
+        var nodes = new List<ModifierNodeSpec>();
+        List<ModifierNodeSpec>? siblingList = null;
+        foreach (var nodeId in nodeIds)
+        {
+            if (!seen.Add(nodeId))
+            {
+                continue;
+            }
+
+            if (Find(nodeId) is not { } node)
+            {
+                error = "Modifier node no longer exists.";
+                return false;
+            }
+
+            var parentList = FindParentList(nodeId);
+            if (parentList is null)
+            {
+                error = "Modifier node no longer exists.";
+                return false;
+            }
+
+            if (siblingList is null)
+            {
+                siblingList = parentList;
+            }
+            else if (!ReferenceEquals(siblingList, parentList))
+            {
+                error = "All selected items must be at the same level to group them.";
+                return false;
+            }
+
+            nodes.Add(node);
+        }
+
+        if (nodes.Count < 2 || siblingList is null)
+        {
+            error = "Select at least two items to group.";
+            return false;
+        }
+
+        // Position of the first selected node within the shared sibling list.
+        var minIndex = siblingList.Count;
+        foreach (var node in nodes)
+        {
+            var index = FindSiblingIndex(siblingList, node.NodeId);
+            if (index >= 0 && index < minIndex)
+            {
+                minIndex = index;
+            }
+        }
+
+        // Children keep their stack order regardless of the order they were selected in.
+        nodes.Sort(
+            (a, b) =>
+            {
+                var indexA = FindSiblingIndex(siblingList, a.NodeId);
+                var indexB = FindSiblingIndex(siblingList, b.NodeId);
+                return indexA.CompareTo(indexB);
+            }
+        );
+
+        var group = new ModifierGroupSpec { Name = "Group" };
+        siblingList.Insert(minIndex, group);
+
+        foreach (var node in nodes)
+        {
+            siblingList.Remove(node);
+            group.Children.Add(node);
+        }
+
+        groupNodeId = group.NodeId;
+        return true;
+    }
+
+    /// <summary>
     /// Returns the sibling list (root nodes or a group's children) that contains the
     /// given node, or an empty list if the node does not exist.
     /// </summary>

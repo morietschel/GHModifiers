@@ -44,6 +44,7 @@ public sealed class ModifierStackPanel : Panel
     private readonly Button _editSelectedButton;
     private readonly Button _moveUpSelectedButton;
     private readonly Button _moveDownSelectedButton;
+    private readonly Button _groupSelectedButton;
     private readonly Button _applySelectedButton;
     private readonly Button _deleteSelectedButton;
     private readonly Button _bakeButton;
@@ -173,6 +174,13 @@ public sealed class ModifierStackPanel : Panel
             (_, _) => MoveSelectedSteps(1)
         );
 
+        _groupSelectedButton = new Button
+        {
+            Text = "Group",
+            ToolTip = "Group the selected items together.",
+        };
+        _groupSelectedButton.Click += OnGroupSelectedClicked;
+
         _applySelectedButton = CreateIconButton(
             LoadRhinoIcon("Rhino.UI.Resources.Check.svg"),
             "Apply selected modifier.",
@@ -234,6 +242,7 @@ public sealed class ModifierStackPanel : Panel
                 _editSelectedButton,
                 _moveUpSelectedButton,
                 _moveDownSelectedButton,
+                _groupSelectedButton,
                 _applySelectedButton,
                 _deleteSelectedButton,
                 new StackLayoutItem(new Panel(), true),
@@ -689,6 +698,7 @@ public sealed class ModifierStackPanel : Panel
             canEdit && selectedSteps.Any(step => CanMoveDown(state, step));
         _applySelectedButton.Enabled = canEdit && selectedSteps.Count == 1;
         _deleteSelectedButton.Enabled = canEdit && selectedSteps.Count > 0;
+        _groupSelectedButton.Enabled = canEdit && CanGroupSelection(state, selectedSteps);
 
         UpdateToolbarIcon(
             _moveUpSelectedButton,
@@ -1723,6 +1733,72 @@ public sealed class ModifierStackPanel : Panel
         }
 
         ApplyStep(state.SelectedObjectId.Value, state, selectedSteps[0]);
+    }
+
+    private void OnGroupSelectedClicked(object? sender, EventArgs e)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            return;
+        }
+
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(doc);
+        if (!state.SelectedObjectId.HasValue)
+        {
+            return;
+        }
+
+        var selectedSteps = GetSelectedSteps(state);
+        if (!CanGroupSelection(state, selectedSteps))
+        {
+            return;
+        }
+
+        var nodeIds = selectedSteps.Select(step => step.StepId).ToList();
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.GroupNodes(
+                doc,
+                state.SelectedObjectId.Value,
+                nodeIds,
+                out var groupNodeId,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        // Select the newly created group so renaming / moving it is immediate.
+        var groupKey = groupNodeId.ToString("N");
+        _selectedStepKeys.Clear();
+        _selectedStepKeys.Add(groupKey);
+        _lastPrimarySelectedStepKey = groupKey;
+        RefreshView();
+
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            RhinoApp.WriteLine(message);
+        }
+    }
+
+    /// <summary>
+    /// Whether the selection can be wrapped in a group: at least two items, all
+    /// siblings at the same level (so the group lands at the first item's position).
+    /// </summary>
+    private static bool CanGroupSelection(
+        ModifierPanelState state,
+        List<ModifierStepPanelState> selectedSteps
+    )
+    {
+        if (selectedSteps.Count < 2)
+        {
+            return false;
+        }
+
+        var firstParent = selectedSteps[0].ParentNodeId;
+        return selectedSteps.All(step => step.ParentNodeId == firstParent);
     }
 
     private void OnDeleteSelectedClicked(object? sender, EventArgs e)
