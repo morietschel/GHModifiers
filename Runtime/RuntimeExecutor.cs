@@ -15,6 +15,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 using RhinoModifiers.Models;
+using RhinoModifiers.Runtime.Modifiers;
 
 namespace RhinoModifiers.Runtime;
 
@@ -92,14 +93,22 @@ internal sealed class RuntimeExecutor : IDisposable
         RhinoDoc doc,
         Guid objectId,
         IReadOnlyList<GeometryBase> currentGeometry,
-        ModifierStackSpec spec,
+        IReadOnlyList<ModifierSpec> modifiers,
         StackRuntime runtime
     )
     {
         ulong upstreamRevision = runtime.RootRevision;
         var anyStepSucceeded = false;
         var failedAtFirstEnabledStep = false;
-        var firstEnabledIndex = spec.Steps.FindIndex(step => step.Enabled);
+        var firstEnabledIndex = -1;
+        for (var i = 0; i < modifiers.Count; i++)
+        {
+            if (modifiers[i].Enabled)
+            {
+                firstEnabledIndex = i;
+                break;
+            }
+        }
         var publishedOutputsByStepId = new Dictionary<Guid, IReadOnlyList<StepOutputValue>>();
         var geometryState = CloneGeometry(currentGeometry);
 
@@ -107,15 +116,49 @@ internal sealed class RuntimeExecutor : IDisposable
             $"Stack evaluation entering step loop. RootRevision={runtime.RootRevision}, FirstEnabledIndex={firstEnabledIndex}"
         );
 
-        for (var i = 0; i < spec.Steps.Count; i++)
+        for (var i = 0; i < modifiers.Count; i++)
         {
-            var stepSpec = spec.Steps[i];
-            if (!stepSpec.Enabled)
+            var stepSpec = modifiers[i];
+            if (
+                !stepSpec.Enabled
+                || (
+                    stepSpec is GrasshopperModifierSpec emptyPathGh
+                    && string.IsNullOrWhiteSpace(emptyPathGh.Path)
+                )
+            )
             {
-                Log($"Step {i} disabled. Disposing any existing runtime and skipping.");
+                Log($"Step {i} disabled or missing a script. Skipping.");
                 runtime.DisposeStep(i);
                 runtime.ClearOutputs(i);
-                publishedOutputsByStepId.Remove(stepSpec.StepId);
+                publishedOutputsByStepId.Remove(stepSpec.NodeId);
+                continue;
+            }
+
+            if (stepSpec is NativeModifierSpec nativeSpec)
+            {
+                Log(
+                    $"Step {i} solving native modifier {ModifierDisplayNames.GetStepLabel(stepSpec)}."
+                );
+                var nativeResult = EvaluateNativeModifier(nativeSpec, geometryState);
+                if (!nativeResult.Success)
+                {
+                    runtime.SetError(i, nativeResult.ErrorMessage);
+                    runtime.ClearOutputs(i);
+                    publishedOutputsByStepId.Remove(stepSpec.NodeId);
+                    Log($"Step {i} native solve failed. {nativeResult.ErrorMessage}");
+                    failedAtFirstEnabledStep = i == firstEnabledIndex;
+                    break;
+                }
+
+                runtime.SetOutputs(i, nativeResult.PublishedOutputs);
+                publishedOutputsByStepId[stepSpec.NodeId] = nativeResult.PublishedOutputs;
+                if (nativeResult.HasGeometryOutput)
+                {
+                    geometryState = CloneGeometry(nativeResult.OutputGeometry);
+                }
+
+                upstreamRevision = NextRevision();
+                anyStepSucceeded = true;
                 continue;
             }
 
@@ -128,7 +171,7 @@ internal sealed class RuntimeExecutor : IDisposable
             {
                 runtime.SetError(i, ex.Message);
                 Log(
-                    $"Step {i} runtime setup failed for '{Path.GetFileName(stepSpec.Path)}'. {ex.Message}"
+                    $"Step {i} runtime setup failed for '{Path.GetFileName(GetModifierPath(stepSpec))}'. {ex.Message}"
                 );
                 failedAtFirstEnabledStep = i == firstEnabledIndex;
                 break;
@@ -137,10 +180,10 @@ internal sealed class RuntimeExecutor : IDisposable
             if (stepRuntime.LastInputRevision == upstreamRevision)
             {
                 Log(
-                    $"Step {i} cache hit. Modifier={Path.GetFileName(stepSpec.Path)}, InputRevision={upstreamRevision}, CachedOutputCount={stepRuntime.CachedOutput.Count}"
+                    $"Step {i} cache hit. Modifier={Path.GetFileName(GetModifierPath(stepSpec))}, InputRevision={upstreamRevision}, CachedOutputCount={stepRuntime.CachedOutput.Count}"
                 );
                 runtime.SetOutputs(i, stepRuntime.CachedPublishedOutputs);
-                publishedOutputsByStepId[stepSpec.StepId] = stepRuntime.CachedPublishedOutputs;
+                publishedOutputsByStepId[stepSpec.NodeId] = stepRuntime.CachedPublishedOutputs;
                 if (stepRuntime.Contract.HasGeometryOutputs)
                 {
                     geometryState = CloneGeometry(stepRuntime.CachedOutput);
@@ -152,14 +195,14 @@ internal sealed class RuntimeExecutor : IDisposable
             }
 
             Log(
-                $"Step {i} solving. Modifier={Path.GetFileName(stepSpec.Path)}, InputRevision={upstreamRevision}, InputCount={geometryState.Count}, InputSummary={DescribeGeometry(geometryState)}"
+                $"Step {i} solving. Modifier={Path.GetFileName(GetModifierPath(stepSpec))}, InputRevision={upstreamRevision}, InputCount={geometryState.Count}, InputSummary={DescribeGeometry(geometryState)}"
             );
             var result = EvaluateStep(
                 doc,
                 stepRuntime,
                 stepSpec,
                 i,
-                spec.Steps,
+                modifiers,
                 publishedOutputsByStepId,
                 geometryState
             );
@@ -167,9 +210,9 @@ internal sealed class RuntimeExecutor : IDisposable
             {
                 runtime.SetError(i, result.ErrorMessage);
                 runtime.ClearOutputs(i);
-                publishedOutputsByStepId.Remove(stepSpec.StepId);
+                publishedOutputsByStepId.Remove(stepSpec.NodeId);
                 Log(
-                    $"Step {i} solve failed for '{Path.GetFileName(stepSpec.Path)}'. {result.ErrorMessage}"
+                    $"Step {i} solve failed for '{Path.GetFileName(GetModifierPath(stepSpec))}'. {result.ErrorMessage}"
                 );
                 failedAtFirstEnabledStep = i == firstEnabledIndex;
                 break;
@@ -180,7 +223,7 @@ internal sealed class RuntimeExecutor : IDisposable
             stepRuntime.LastInputRevision = upstreamRevision;
             stepRuntime.LastOutputRevision = NextRevision();
             runtime.SetOutputs(i, result.PublishedOutputs);
-            publishedOutputsByStepId[stepSpec.StepId] = result.PublishedOutputs;
+            publishedOutputsByStepId[stepSpec.NodeId] = result.PublishedOutputs;
             if (result.HasGeometryOutput)
             {
                 geometryState = CloneGeometry(stepRuntime.CachedOutput);
@@ -189,12 +232,12 @@ internal sealed class RuntimeExecutor : IDisposable
             upstreamRevision = stepRuntime.LastOutputRevision;
             anyStepSucceeded = true;
             Log(
-                $"Step {i} solve complete. Modifier={Path.GetFileName(stepSpec.Path)}, OutputRevision={stepRuntime.LastOutputRevision}, HasGeometryOutput={result.HasGeometryOutput}, RawOutputCount={result.RawGeometryOutputItemCount}, ConvertedOutputCount={stepRuntime.CachedOutput.Count}, OutputSummary={DescribeGeometry(result.HasGeometryOutput ? stepRuntime.CachedOutput : geometryState)}"
+                $"Step {i} solve complete. Modifier={Path.GetFileName(GetModifierPath(stepSpec))}, OutputRevision={stepRuntime.LastOutputRevision}, HasGeometryOutput={result.HasGeometryOutput}, RawOutputCount={result.RawGeometryOutputItemCount}, ConvertedOutputCount={stepRuntime.CachedOutput.Count}, OutputSummary={DescribeGeometry(result.HasGeometryOutput ? stepRuntime.CachedOutput : geometryState)}"
             );
             if (result.SkippedGeometryOutputTypes.Count > 0)
             {
                 Log(
-                    $"Step {i} skipped output items. Modifier={Path.GetFileName(stepSpec.Path)}, Skipped={string.Join(", ", result.SkippedGeometryOutputTypes)}"
+                    $"Step {i} skipped output items. Modifier={Path.GetFileName(GetModifierPath(stepSpec))}, Skipped={string.Join(", ", result.SkippedGeometryOutputTypes)}"
                 );
             }
         }
@@ -218,7 +261,7 @@ internal sealed class RuntimeExecutor : IDisposable
     public bool TryEvaluateStackThroughStep(
         RhinoDoc doc,
         StackRuntime runtime,
-        ModifierStackSpec spec,
+        IReadOnlyList<ModifierSpec> modifiers,
         int stepIndex,
         IReadOnlyList<GeometryBase> inputGeometry,
         out List<GeometryBase> outputGeometry,
@@ -228,18 +271,43 @@ internal sealed class RuntimeExecutor : IDisposable
         error = string.Empty;
         outputGeometry = new List<GeometryBase>();
 
-        runtime.EnsureStepCapacity(spec.Steps.Count);
+        runtime.EnsureStepCapacity(modifiers.Count);
         var publishedOutputsByStepId = new Dictionary<Guid, IReadOnlyList<StepOutputValue>>();
         var geometryState = CloneGeometry(inputGeometry);
 
         for (var i = 0; i <= stepIndex; i++)
         {
-            var stepSpec = spec.Steps[i];
-            if (!stepSpec.Enabled)
+            var stepSpec = modifiers[i];
+            if (
+                !stepSpec.Enabled
+                || (
+                    stepSpec is GrasshopperModifierSpec emptyPathGh
+                    && string.IsNullOrWhiteSpace(emptyPathGh.Path)
+                )
+            )
             {
                 runtime.DisposeStep(i);
                 runtime.ClearOutputs(i);
-                publishedOutputsByStepId.Remove(stepSpec.StepId);
+                publishedOutputsByStepId.Remove(stepSpec.NodeId);
+                continue;
+            }
+
+            if (stepSpec is NativeModifierSpec nativeSpec)
+            {
+                var nativeResult = EvaluateNativeModifier(nativeSpec, geometryState);
+                if (!nativeResult.Success)
+                {
+                    error =
+                        $"Modifier {i + 1} '{ModifierDisplayNames.GetStepLabel(stepSpec)}' failed: {nativeResult.ErrorMessage}";
+                    return false;
+                }
+
+                publishedOutputsByStepId[stepSpec.NodeId] = nativeResult.PublishedOutputs;
+                if (nativeResult.HasGeometryOutput)
+                {
+                    geometryState = CloneGeometry(nativeResult.OutputGeometry);
+                }
+
                 continue;
             }
 
@@ -259,18 +327,18 @@ internal sealed class RuntimeExecutor : IDisposable
                 stepRuntime,
                 stepSpec,
                 i,
-                spec.Steps,
+                modifiers,
                 publishedOutputsByStepId,
                 geometryState
             );
             if (!result.Success)
             {
                 error =
-                    $"Modifier {i + 1} '{Path.GetFileName(stepSpec.Path)}' failed: {result.ErrorMessage}";
+                    $"Modifier {i + 1} '{Path.GetFileName(GetModifierPath(stepSpec))}' failed: {result.ErrorMessage}";
                 return false;
             }
 
-            publishedOutputsByStepId[stepSpec.StepId] = result.PublishedOutputs;
+            publishedOutputsByStepId[stepSpec.NodeId] = result.PublishedOutputs;
             if (result.HasGeometryOutput)
             {
                 geometryState = CloneGeometry(result.OutputGeometry);
@@ -289,10 +357,14 @@ internal sealed class RuntimeExecutor : IDisposable
         RhinoDoc doc,
         StackRuntime runtime,
         int index,
-        ModifierStepSpec spec
+        ModifierSpec spec
     )
     {
-        var fullPath = Path.GetFullPath(spec.Path);
+        var fullPath = spec is GrasshopperModifierSpec grasshopper
+            ? Path.GetFullPath(grasshopper.Path)
+            : throw new InvalidOperationException(
+                $"Modifier '{spec.Name}' has no Grasshopper definition to evaluate."
+            );
         var lastWriteUtc = File.Exists(fullPath)
             ? File.GetLastWriteTimeUtc(fullPath)
             : DateTime.MinValue;
@@ -484,6 +556,45 @@ internal sealed class RuntimeExecutor : IDisposable
             error = ex.Message;
             return false;
         }
+    }
+
+    /// <summary>
+    /// Resolves a leaf modifier's contract regardless of kind: Grasshopper modifiers
+    /// load their definition; native modifiers report their static descriptors.
+    /// </summary>
+    public bool TryGetDefinitionContract(
+        RhinoDoc? doc,
+        ModifierSpec step,
+        out DefinitionContract contract,
+        out string error
+    )
+    {
+        if (step is GrasshopperModifierSpec grasshopper)
+        {
+            return TryGetDefinitionContract(doc, grasshopper.Path, out contract, out error);
+        }
+
+        if (step is NativeModifierSpec nativeSpec)
+        {
+            if (NativeModifiers.TryCreate(nativeSpec.NativeKind, out var modifier, out error))
+            {
+                contract = new DefinitionContract(
+                    null,
+                    modifier.Inputs,
+                    modifier.Outputs,
+                    modifier.Outputs.Any(output => output.Kind == ModifierIoKind.Geometry)
+                );
+                error = string.Empty;
+                return true;
+            }
+
+            contract = null!;
+            return false;
+        }
+
+        contract = null!;
+        error = "This modifier kind is not supported yet.";
+        return false;
     }
 
     /// <inheritdoc/>
@@ -853,7 +964,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static bool IsMissingRequiredInput(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor descriptor
     )
     {
@@ -875,7 +986,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static IEnumerable<ModifierInputDescriptor> GetMissingRequiredInputs(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         IEnumerable<ModifierInputDescriptor> descriptors
     )
     {
@@ -1176,9 +1287,9 @@ internal sealed class RuntimeExecutor : IDisposable
     private StepEvaluationResult EvaluateStep(
         RhinoDoc doc,
         StepRuntime runtime,
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         int stepIndex,
-        IReadOnlyList<ModifierStepSpec> allSteps,
+        IReadOnlyList<ModifierSpec> allSteps,
         IReadOnlyDictionary<Guid, IReadOnlyList<StepOutputValue>> publishedOutputsByStepId,
         IReadOnlyList<GeometryBase> inputGeometry
     )
@@ -1364,9 +1475,9 @@ internal sealed class RuntimeExecutor : IDisposable
         RhinoDoc doc,
         GH_Document document,
         RuntimeInputBinding binding,
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         int stepIndex,
-        IReadOnlyList<ModifierStepSpec> allSteps,
+        IReadOnlyList<ModifierSpec> allSteps,
         IReadOnlyDictionary<Guid, IReadOnlyList<StepOutputValue>> publishedOutputsByStepId,
         IReadOnlyList<GeometryBase> currentGeometry,
         out string error
@@ -1592,7 +1703,7 @@ internal sealed class RuntimeExecutor : IDisposable
         GH_Document document,
         RuntimeInputBinding binding,
         int stepIndex,
-        IReadOnlyList<ModifierStepSpec> allSteps,
+        IReadOnlyList<ModifierSpec> allSteps,
         IReadOnlyDictionary<Guid, IReadOnlyList<StepOutputValue>> publishedOutputsByStepId,
         ModifierInputLinkSpec inputLink,
         out string error
@@ -1680,7 +1791,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
         sourceObjectLabel = DescribeLinkedObject(sourceRhinoObject);
         var sourceSpec = ModifierStackStorage.Load(sourceRhinoObject);
-        if (sourceSpec.Steps.Count == 0)
+        if (new ModifierStack(sourceSpec).Flatten().Count == 0)
         {
             error = $"Modified source '{sourceObjectLabel}' no longer has any modifiers.";
             return false;
@@ -1713,7 +1824,7 @@ internal sealed class RuntimeExecutor : IDisposable
     private bool TryResolveLinkedOutput(
         ModifierInputDescriptor targetInput,
         int targetStepIndex,
-        IReadOnlyList<ModifierStepSpec> allSteps,
+        IReadOnlyList<ModifierSpec> allSteps,
         IReadOnlyDictionary<Guid, IReadOnlyList<StepOutputValue>> publishedOutputsByStepId,
         ModifierInputLinkSpec inputLink,
         out StepOutputValue sourceOutputValue,
@@ -1736,7 +1847,7 @@ internal sealed class RuntimeExecutor : IDisposable
         var sourceStepIndex = -1;
         for (var i = 0; i < allSteps.Count; i++)
         {
-            if (allSteps[i].StepId == inputLink.SourceStepId)
+            if (allSteps[i].NodeId == inputLink.SourceNodeId)
             {
                 sourceStepIndex = i;
                 break;
@@ -1755,7 +1866,7 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         var sourceStep = allSteps[sourceStepIndex];
-        sourceStepLabel = Path.GetFileName(sourceStep.Path);
+        sourceStepLabel = ModifierDisplayNames.GetStepLabel(sourceStep);
         if (!sourceStep.Enabled)
         {
             error = $"Linked source '{sourceStepLabel}' is disabled.";
@@ -1765,7 +1876,7 @@ internal sealed class RuntimeExecutor : IDisposable
         if (
             !TryGetDefinitionContract(
                 RhinoDoc.ActiveDoc,
-                sourceStep.Path,
+                sourceStep,
                 out var sourceContract,
                 out var contractError
             )
@@ -1793,7 +1904,7 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         if (
-            !publishedOutputsByStepId.TryGetValue(sourceStep.StepId, out var publishedOutputs)
+            !publishedOutputsByStepId.TryGetValue(sourceStep.NodeId, out var publishedOutputs)
             || !TryGetStepOutputValue(publishedOutputs, sourceOutput.Id, out sourceOutputValue)
         )
         {
@@ -1806,7 +1917,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static bool TryGetInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1825,7 +1936,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static bool TryGetStepOutputInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1843,7 +1954,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static bool TryGetObjectPreviewInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1869,7 +1980,7 @@ internal sealed class RuntimeExecutor : IDisposable
 
         return storedLink.SourceKind switch
         {
-            ModifierInputLinkSourceKind.StepOutput => storedLink.SourceStepId != Guid.Empty
+            ModifierInputLinkSourceKind.StepOutput => storedLink.SourceNodeId != Guid.Empty
                 && !string.IsNullOrWhiteSpace(storedLink.SourceOutputId),
             ModifierInputLinkSourceKind.ObjectPreview => storedLink.SourceObjectId != Guid.Empty,
             _ => false,
@@ -1877,7 +1988,7 @@ internal sealed class RuntimeExecutor : IDisposable
     }
 
     internal static bool TryGetExplicitInputValue(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor descriptor,
         out string serializedValue
     )
@@ -1890,6 +2001,47 @@ internal sealed class RuntimeExecutor : IDisposable
 
         serializedValue = string.Empty;
         return false;
+    }
+
+    /// <summary>
+    /// Returns the Grasshopper definition path for a modifier, or an empty string for
+    /// modifier kinds that do not load a definition.
+    /// </summary>
+    private static string GetModifierPath(ModifierSpec spec)
+    {
+        return spec is GrasshopperModifierSpec grasshopper ? grasshopper.Path : string.Empty;
+    }
+
+    private static StepEvaluationResult EvaluateNativeModifier(
+        NativeModifierSpec spec,
+        IReadOnlyList<GeometryBase> inputGeometry
+    )
+    {
+        if (!NativeModifiers.TryCreate(spec.NativeKind, out var modifier, out var createError))
+        {
+            return StepEvaluationResult.Fail(createError);
+        }
+
+        var result = modifier.Evaluate(
+            new ModifierEvaluationContext
+            {
+                InputGeometry = inputGeometry,
+                InputValues = spec.InputValues,
+            }
+        );
+
+        if (!result.Success)
+        {
+            return StepEvaluationResult.Fail(result.ErrorMessage);
+        }
+
+        return StepEvaluationResult.Successful(
+            result.HasGeometryOutput,
+            result.OutputGeometry,
+            result.PublishedOutputs,
+            0,
+            new List<string>()
+        );
     }
 
     private static void ClearParamData(IGH_Param param)
@@ -2799,7 +2951,7 @@ internal sealed class RuntimeExecutor : IDisposable
     internal static string GetStoredStepLabel(ModifierInputLinkSpec inputLink)
     {
         return string.IsNullOrWhiteSpace(inputLink.SourceStepLabel)
-            ? inputLink.SourceStepId.ToString("D")
+            ? inputLink.SourceNodeId.ToString("D")
             : inputLink.SourceStepLabel;
     }
 

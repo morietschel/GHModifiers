@@ -6,6 +6,7 @@ using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 using RhinoModifiers.Models;
+using RhinoModifiers.Runtime.Modifiers;
 using RhinoModifiers.UI;
 
 namespace RhinoModifiers.Runtime;
@@ -62,45 +63,148 @@ internal sealed class ModifierEngine : IDisposable
         var spec = ModifierStackStorage.Load(rhinoObject);
         EnsureSavedStackRuntime(doc, rhinoObject.Id, spec);
         var runtime = TryGetStackRuntime(doc, rhinoObject.Id);
-        var stepContexts = new List<PanelStepContext>(spec.Steps.Count);
-        for (var i = 0; i < spec.Steps.Count; i++)
+        var stack = new ModifierStack(spec);
+        var flat = stack.Flatten();
+        var stepContexts = new List<PanelStepContext>(flat.Count);
+        for (var i = 0; i < flat.Count; i++)
         {
-            var step = spec.Steps[i];
-            var displayName = Path.GetFileName(step.Path);
-            if (
-                _executor.TryGetDefinitionContract(
-                    doc,
-                    step.Path,
-                    out var contract,
-                    out var contractError
-                )
-            )
+            var step = flat[i];
+            var displayName = string.Empty;
+            var kind = ModifierKind.Grasshopper;
+            DefinitionContract? contract = null;
+            var contractError = string.Empty;
+            if (step is GrasshopperModifierSpec grasshopper)
             {
-                stepContexts.Add(
-                    new PanelStepContext(i, step, displayName, contract, string.Empty)
+                if (string.IsNullOrWhiteSpace(grasshopper.Path))
+                {
+                    displayName = "No script selected";
+                }
+                else
+                {
+                    displayName = Path.GetFileName(grasshopper.Path);
+                    if (
+                        !_executor.TryGetDefinitionContract(
+                            doc,
+                            step,
+                            out contract,
+                            out contractError
+                        )
+                    )
+                    {
+                        contract = null;
+                    }
+                }
+            }
+            else if (step is NativeModifierSpec nativeSpec)
+            {
+                kind = ModifierKind.Native;
+                displayName = ModifierDisplayNames.GetStepLabel(step);
+                if (!_executor.TryGetDefinitionContract(doc, step, out contract, out contractError))
+                {
+                    contract = null;
+                }
+            }
+            else
+            {
+                contractError = "This modifier kind is not supported yet.";
+            }
+
+            stepContexts.Add(
+                new PanelStepContext(i, step, kind, displayName, contract, contractError)
+            );
+        }
+
+        var steps = new List<ModifierStepPanelState>();
+        var rowIndex = 0;
+        var leafIndex = 0;
+        BuildPanelRows(
+            doc,
+            rhinoObject.Id,
+            stepContexts,
+            stack.Spec.Nodes,
+            0,
+            Guid.Empty,
+            runtime,
+            ref rowIndex,
+            ref leafIndex,
+            steps
+        );
+
+        var selectionLabel = $"{rhinoObject.ObjectType}  {rhinoObject.Id}";
+        var runtimeMessage = runtime?.ErrorMessage ?? string.Empty;
+
+        return new ModifierPanelState
+        {
+            CanEdit = true,
+            SelectedObjectId = rhinoObject.Id,
+            SelectionLabel = selectionLabel,
+            StatusMessage = runtimeMessage,
+            Steps = steps,
+        };
+    }
+
+    private void BuildPanelRows(
+        RhinoDoc doc,
+        Guid objectId,
+        IReadOnlyList<PanelStepContext> stepContexts,
+        List<ModifierNodeSpec> nodes,
+        int depth,
+        Guid parentNodeId,
+        StackRuntime? runtime,
+        ref int rowIndex,
+        ref int leafIndex,
+        List<ModifierStepPanelState> rows
+    )
+    {
+        foreach (var node in nodes)
+        {
+            if (node is ModifierGroupSpec group)
+            {
+                var groupName = string.IsNullOrWhiteSpace(group.Name) ? "Group" : group.Name;
+                rows.Add(
+                    new ModifierStepPanelState
+                    {
+                        Index = rowIndex++,
+                        StepId = group.NodeId,
+                        IsGroup = true,
+                        Depth = depth,
+                        ParentNodeId = parentNodeId,
+                        Kind = ModifierKind.Group,
+                        Name = group.Name,
+                        DisplayName = groupName,
+                        Enabled = true,
+                    }
+                );
+
+                BuildPanelRows(
+                    doc,
+                    objectId,
+                    stepContexts,
+                    group.Children,
+                    depth + 1,
+                    group.NodeId,
+                    runtime,
+                    ref rowIndex,
+                    ref leafIndex,
+                    rows
                 );
                 continue;
             }
 
-            stepContexts.Add(new PanelStepContext(i, step, displayName, null, contractError));
-        }
+            if (node is not ModifierSpec modifier)
+            {
+                continue;
+            }
 
-        var steps = new List<ModifierStepPanelState>(spec.Steps.Count);
-        foreach (var stepContext in stepContexts)
-        {
+            var stepContext = stepContexts[leafIndex];
+            leafIndex += 1;
             var stepError = runtime?.GetErrorForIndex(stepContext.Index) ?? string.Empty;
             var inputs = Array.Empty<ModifierStepInputPanelState>();
             var outputs = Array.Empty<ModifierStepOutputPanelState>();
 
             if (stepContext.Contract is not null)
             {
-                inputs = BuildInputPanelState(
-                        doc,
-                        rhinoObject.Id,
-                        stepContexts,
-                        stepContext,
-                        runtime
-                    )
+                inputs = BuildInputPanelState(doc, objectId, stepContexts, stepContext, runtime)
                     .ToArray();
                 outputs = BuildOutputPanelState(
                         runtime?.GetOutputsForIndex(stepContext.Index),
@@ -126,32 +230,26 @@ internal sealed class ModifierEngine : IDisposable
                 stepError = stepContext.ContractError;
             }
 
-            steps.Add(
+            rows.Add(
                 new ModifierStepPanelState
                 {
-                    Index = stepContext.Index,
-                    StepId = stepContext.Step.StepId,
+                    Index = rowIndex++,
+                    LeafIndex = stepContext.Index,
+                    StepId = stepContext.Step.NodeId,
                     Enabled = stepContext.Step.Enabled,
-                    FullPath = stepContext.Step.Path,
+                    FullPath = stepContext.Step is GrasshopperModifierSpec stepGh
+                        ? stepGh.Path
+                        : string.Empty,
                     DisplayName = stepContext.DisplayName,
                     ErrorMessage = stepError,
                     Inputs = inputs,
                     Outputs = outputs,
+                    Depth = depth,
+                    ParentNodeId = parentNodeId,
+                    Kind = stepContext.Kind,
                 }
             );
         }
-
-        var selectionLabel = $"{rhinoObject.ObjectType}  {rhinoObject.Id}";
-        var runtimeMessage = runtime?.ErrorMessage ?? string.Empty;
-
-        return new ModifierPanelState
-        {
-            CanEdit = true,
-            SelectedObjectId = rhinoObject.Id,
-            SelectionLabel = selectionLabel,
-            StatusMessage = runtimeMessage,
-            Steps = steps,
-        };
     }
 
     public IEnumerable<PreviewStack> GetPreviewStacks(RhinoDoc? doc)
@@ -222,7 +320,20 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        spec.Steps.Add(new ModifierStepSpec { Enabled = true, Path = Path.GetFullPath(path) });
+        var stack = new ModifierStack(spec);
+        if (
+            !stack.TryAddNode(
+                new GrasshopperModifierSpec { Enabled = true, Path = Path.GetFullPath(path) },
+                null,
+                null,
+                out var addError
+            )
+        )
+        {
+            message = addError;
+            Log(message);
+            return false;
+        }
 
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
@@ -231,9 +342,227 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, spec.Steps.Count - 1);
+        var stepCount = stack.Flatten().Count;
+        InvalidateStackFromStep(doc, objectId, spec, stepCount - 1);
         message = $"Added modifier: {Path.GetFileName(path)}";
-        Log($"{message} StackCount={spec.Steps.Count}");
+        Log($"{message} StackCount={stepCount}");
+        return true;
+    }
+
+    /// <summary>
+    /// Adds any modifier node (modifier or group) to the stack, optionally inside the
+    /// named parent group, and returns the new node's id.
+    /// </summary>
+    public bool AddNode(
+        RhinoDoc doc,
+        Guid objectId,
+        ModifierNodeSpec node,
+        Guid? parentNodeId,
+        out Guid addedNodeId,
+        out string message
+    )
+    {
+        addedNodeId = Guid.Empty;
+        message = string.Empty;
+        Log(
+            $"AddNode requested. Object={objectId}, Kind={node.GetType().Name}, Parent={parentNodeId}"
+        );
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            message = "Selected object no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        if (!IsSupportedGeometryObject(rhinoObject))
+        {
+            message = $"Object type '{rhinoObject.ObjectType}' is not supported by the MVP.";
+            Log(message);
+            return false;
+        }
+
+        var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        if (!stack.TryAddNode(node, parentNodeId, null, out var addError))
+        {
+            message = addError;
+            Log(message);
+            return false;
+        }
+
+        if (!ModifierStackStorage.Save(doc, objectId, spec))
+        {
+            message = "Failed to store the modifier stack on the Rhino object.";
+            Log(message);
+            return false;
+        }
+
+        addedNodeId = node.NodeId;
+        var start = stack.GetLeafRangeStart(node.NodeId, out _);
+        InvalidateStackFromStep(doc, objectId, spec, start);
+        message = node is ModifierGroupSpec ? "Added modifier group." : "Added modifier.";
+        Log($"{message} Object={objectId}, Node={node.NodeId}");
+        return true;
+    }
+
+    /// <summary>
+    /// Sets (or replaces) the Grasshopper definition backing a Grasshopper modifier.
+    /// The stack is re-evaluated so the panel builds out the new script's inputs/outputs.
+    /// </summary>
+    public bool SetModifierPath(
+        RhinoDoc doc,
+        Guid objectId,
+        Guid nodeId,
+        string path,
+        out string message
+    )
+    {
+        message = string.Empty;
+        Log($"SetModifierPath requested. Object={objectId}, Node={nodeId}, Path={path}");
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            message = "Modifier path is empty.";
+            Log(message);
+            return false;
+        }
+
+        if (!File.Exists(path))
+        {
+            message = $"Modifier file not found: {path}";
+            Log(message);
+            return false;
+        }
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            message = "Selected object no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        if (stack.Find(nodeId) is not GrasshopperModifierSpec grasshopper)
+        {
+            message = "The selected modifier cannot host a Grasshopper definition.";
+            Log(message);
+            return false;
+        }
+
+        grasshopper.Path = Path.GetFullPath(path);
+        if (!ModifierStackStorage.Save(doc, objectId, spec))
+        {
+            message = "Failed to update the modifier.";
+            Log(message);
+            return false;
+        }
+
+        var start = stack.GetLeafRangeStart(nodeId, out _);
+        InvalidateStackFromStep(doc, objectId, spec, start);
+        message = $"Modifier script set to {Path.GetFileName(path)}";
+        Log(message);
+        return true;
+    }
+
+    /// <summary>
+    /// Renames any node (group or modifier) in the stack.
+    /// </summary>
+    public bool RenameNode(
+        RhinoDoc doc,
+        Guid objectId,
+        Guid nodeId,
+        string name,
+        out string message
+    )
+    {
+        message = string.Empty;
+        Log($"RenameNode requested. Object={objectId}, Node={nodeId}, Name='{name}'");
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            message = "Selected object no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        if (stack.Find(nodeId) is not { } node)
+        {
+            message = "Modifier node no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        node.Name = name?.Trim() ?? string.Empty;
+        if (!ModifierStackStorage.Save(doc, objectId, spec))
+        {
+            message = "Failed to update the modifier stack.";
+            Log(message);
+            return false;
+        }
+
+        RaiseStateChanged();
+        message = "Renamed modifier.";
+        Log(message);
+        return true;
+    }
+
+    /// <summary>
+    /// Wraps the selected sibling nodes in a new group placed at the first selected
+    /// node's position, and returns the new group's id.
+    /// </summary>
+    public bool GroupNodes(
+        RhinoDoc doc,
+        Guid objectId,
+        IReadOnlyList<Guid> nodeIds,
+        out Guid groupNodeId,
+        out string message
+    )
+    {
+        groupNodeId = Guid.Empty;
+        message = string.Empty;
+        Log($"GroupNodes requested. Object={objectId}, Count={nodeIds?.Count ?? 0}");
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            message = "Selected object no longer exists.";
+            Log(message);
+            return false;
+        }
+
+        var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        if (
+            !stack.TryGroupNodes(
+                nodeIds ?? Array.Empty<Guid>(),
+                out groupNodeId,
+                out var groupError
+            )
+        )
+        {
+            message = groupError;
+            Log(message);
+            return false;
+        }
+
+        if (!ModifierStackStorage.Save(doc, objectId, spec))
+        {
+            message = "Failed to update the modifier stack.";
+            Log(message);
+            return false;
+        }
+
+        var start = stack.GetLeafRangeStart(groupNodeId, out _);
+        InvalidateStackFromStep(doc, objectId, spec, start);
+        message = "Grouped selected items.";
+        Log(message);
         return true;
     }
 
@@ -304,21 +633,34 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (index < 0 || index >= spec.Steps.Count)
+        var stack = new ModifierStack(spec);
+        var node = GetNodeAtRowIndex(stack, index);
+        if (node is null)
         {
             message = "Step index is out of range.";
             Log(message);
             return false;
         }
 
+        var start = stack.GetLeafRangeStart(node.NodeId, out var leafCount);
         var runtime = TryGetStackRuntime(doc, objectId);
-        if (runtime is not null && index < runtime.StepRuntimes.Count)
+        if (runtime is not null && leafCount > 0 && start + leafCount <= runtime.StepRuntimes.Count)
         {
-            runtime.DisposeStep(index);
-            runtime.StepRuntimes.RemoveAt(index);
+            for (var i = 0; i < leafCount; i++)
+            {
+                runtime.DisposeStep(start + i);
+            }
+
+            runtime.StepRuntimes.RemoveRange(start, leafCount);
         }
 
-        spec.Steps.RemoveAt(index);
+        if (!stack.TryRemoveNode(node.NodeId, out _))
+        {
+            message = "Modifier node no longer exists.";
+            Log(message);
+            return false;
+        }
+
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to update the modifier stack.";
@@ -326,9 +668,9 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, start);
         message = "Removed modifier step.";
-        Log($"{message} StackCount={spec.Steps.Count}");
+        Log($"{message} StackCount={stack.Flatten().Count}");
         return true;
     }
 
@@ -344,33 +686,35 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        var targetIndex = index + offset;
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (
-            index < 0
-            || index >= spec.Steps.Count
-            || targetIndex < 0
-            || targetIndex >= spec.Steps.Count
-        )
+        var stack = new ModifierStack(spec);
+        var node = GetNodeAtRowIndex(stack, index);
+        if (node is null)
         {
             message = "Cannot move the modifier step further in that direction.";
             Log(message);
             return false;
         }
 
-        (spec.Steps[index], spec.Steps[targetIndex]) = (spec.Steps[targetIndex], spec.Steps[index]);
+        var oldStart = stack.GetLeafRangeStart(node.NodeId, out var oldCount);
+        if (!stack.TryMoveRelative(node.NodeId, offset, out var moveError))
+        {
+            message = moveError;
+            Log(message);
+            return false;
+        }
 
+        var newStart = stack.GetLeafRangeStart(node.NodeId, out var newCount);
         var runtime = TryGetStackRuntime(doc, objectId);
         if (
             runtime is not null
-            && index < runtime.StepRuntimes.Count
-            && targetIndex < runtime.StepRuntimes.Count
+            && oldCount > 0
+            && oldStart + oldCount <= runtime.StepRuntimes.Count
         )
         {
-            (runtime.StepRuntimes[index], runtime.StepRuntimes[targetIndex]) = (
-                runtime.StepRuntimes[targetIndex],
-                runtime.StepRuntimes[index]
-            );
+            var block = runtime.StepRuntimes.GetRange(oldStart, oldCount);
+            runtime.StepRuntimes.RemoveRange(oldStart, oldCount);
+            runtime.StepRuntimes.InsertRange(Math.Min(newStart, runtime.StepRuntimes.Count), block);
         }
 
         if (!ModifierStackStorage.Save(doc, objectId, spec))
@@ -380,9 +724,9 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, Math.Min(index, targetIndex));
+        InvalidateStackFromStep(doc, objectId, spec, Math.Min(oldStart, newStart));
         message = "Moved modifier step.";
-        Log($"{message} NewIndex={targetIndex}");
+        Log($"{message} NewIndex={newStart}");
         return true;
     }
 
@@ -405,14 +749,17 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (index < 0 || index >= spec.Steps.Count)
+        var stack = new ModifierStack(spec);
+        var modifier = GetLeafAtRowIndex(stack, index, out var resolveError);
+        if (modifier is null)
         {
-            message = "Step index is out of range.";
+            message = resolveError;
             Log(message);
             return false;
         }
 
-        spec.Steps[index].Enabled = enabled;
+        var leafIndex = stack.GetLeafIndex(modifier.NodeId);
+        modifier.Enabled = enabled;
         if (
             enabled
             && !ModifierEngine.TryValidateObjectPreviewGraph(doc, objectId, spec, out message)
@@ -431,11 +778,11 @@ internal sealed class ModifierEngine : IDisposable
 
         if (!enabled && TryGetStackRuntime(doc, objectId) is { } runtime)
         {
-            runtime.DisposeStep(index);
-            runtime.ClearOutputs(index);
+            runtime.DisposeStep(leafIndex);
+            runtime.ClearOutputs(leafIndex);
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, leafIndex);
         message = enabled ? "Modifier enabled." : "Modifier disabled.";
         Log(message);
         return true;
@@ -463,14 +810,17 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (index < 0 || index >= spec.Steps.Count)
+        var stack = new ModifierStack(spec);
+        var modifier = GetLeafAtRowIndex(stack, index, out var resolveError);
+        if (modifier is null)
         {
-            message = "Step index is out of range.";
+            message = resolveError;
             Log(message);
             return false;
         }
 
-        spec.Steps[index].InputValues[inputId] = serializedValue ?? string.Empty;
+        var leafIndex = stack.GetLeafIndex(modifier.NodeId);
+        modifier.InputValues[inputId] = serializedValue ?? string.Empty;
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to update the modifier input value.";
@@ -478,7 +828,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, leafIndex);
         message = "Updated modifier input.";
         Log(message);
         return true;
@@ -489,14 +839,14 @@ internal sealed class ModifierEngine : IDisposable
         Guid objectId,
         int index,
         string inputId,
-        Guid sourceStepId,
+        Guid sourceNodeId,
         string sourceOutputId,
         out string message
     )
     {
         message = string.Empty;
         Log(
-            $"SetStepInputLink requested. Object={objectId}, Index={index}, Input={inputId}, SourceStep={sourceStepId}, SourceOutput={sourceOutputId}"
+            $"SetStepInputLink requested. Object={objectId}, Index={index}, Input={inputId}, SourceNode={sourceNodeId}, SourceOutput={sourceOutputId}"
         );
         var rhinoObject = doc.Objects.FindId(objectId);
         if (rhinoObject is null)
@@ -507,13 +857,23 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        var modifier = GetLeafAtRowIndex(stack, index, out var resolveError);
+        if (modifier is null)
+        {
+            message = resolveError;
+            Log(message);
+            return false;
+        }
+
+        var leafIndex = stack.GetLeafIndex(modifier.NodeId);
         if (
             !TryValidateInputLink(
                 doc,
                 spec,
-                index,
+                leafIndex,
                 inputId,
-                sourceStepId,
+                sourceNodeId,
                 sourceOutputId,
                 out var linkSpec,
                 out message
@@ -524,7 +884,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        spec.Steps[index].InputLinks[inputId] = linkSpec;
+        modifier.InputLinks[inputId] = linkSpec;
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to update the modifier input link.";
@@ -532,7 +892,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, leafIndex);
         message = "Updated modifier input link.";
         Log(message);
         return true;
@@ -560,12 +920,22 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
+        var stack = new ModifierStack(spec);
+        var modifier = GetLeafAtRowIndex(stack, index, out var resolveError);
+        if (modifier is null)
+        {
+            message = resolveError;
+            Log(message);
+            return false;
+        }
+
+        var leafIndex = stack.GetLeafIndex(modifier.NodeId);
         if (
             !TryValidateObjectPreviewInputLink(
                 doc,
                 objectId,
                 spec,
-                index,
+                leafIndex,
                 inputId,
                 sourceObjectId,
                 out var linkSpec,
@@ -577,7 +947,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        spec.Steps[index].InputLinks[inputId] = linkSpec;
+        modifier.InputLinks[inputId] = linkSpec;
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to update the modifier input link.";
@@ -585,7 +955,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, leafIndex);
         message = "Updated modifier input link.";
         Log(message);
         return true;
@@ -610,14 +980,17 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (index < 0 || index >= spec.Steps.Count)
+        var stack = new ModifierStack(spec);
+        var modifier = GetLeafAtRowIndex(stack, index, out var resolveError);
+        if (modifier is null)
         {
-            message = "Step index is out of range.";
+            message = resolveError;
             Log(message);
             return false;
         }
 
-        spec.Steps[index].InputLinks.Remove(inputId);
+        var leafIndex = stack.GetLeafIndex(modifier.NodeId);
+        modifier.InputLinks.Remove(inputId);
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to clear the modifier input link.";
@@ -625,7 +998,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        InvalidateStackFromStep(doc, objectId, spec, index);
+        InvalidateStackFromStep(doc, objectId, spec, leafIndex);
         message = "Cleared modifier input link.";
         Log(message);
         return true;
@@ -640,7 +1013,8 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (spec.Steps.Count == 0)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0)
         {
             message = "Selected object does not have any modifier steps.";
             Log(message);
@@ -649,7 +1023,7 @@ internal sealed class ModifierEngine : IDisposable
 
         ResetStackRuntime(doc, rhinoObject!.Id, spec);
         message = "Queued stack refresh.";
-        Log($"{message} Object={rhinoObject.Id}, StepCount={spec.Steps.Count}");
+        Log($"{message} Object={rhinoObject.Id}, StepCount={stepCount}");
         return true;
     }
 
@@ -667,7 +1041,21 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (stepIndex < 0 || stepIndex >= spec.Steps.Count)
+        var stack = new ModifierStack(spec);
+        var node = GetNodeAtRowIndex(stack, stepIndex);
+        if (node is null)
+        {
+            message = "Step index is out of range.";
+            Log(message);
+            return false;
+        }
+
+        // Applying through a group applies through its last modifier; applying through
+        // a modifier applies through that modifier.
+        var leafIndex = node is ModifierSpec leafModifier
+            ? stack.GetLeafIndex(leafModifier.NodeId)
+            : stack.GetLeafRangeStart(node.NodeId, out var leafCount) + leafCount - 1;
+        if (leafIndex < 0)
         {
             message = "Step index is out of range.";
             Log(message);
@@ -679,8 +1067,8 @@ internal sealed class ModifierEngine : IDisposable
                 doc,
                 objectId,
                 rhinoObject,
-                spec,
-                stepIndex,
+                stack.Flatten(),
+                leafIndex,
                 out var evaluatedGeometry,
                 out var evaluationError
             )
@@ -755,7 +1143,10 @@ internal sealed class ModifierEngine : IDisposable
                 }
             }
 
-            spec.Steps.RemoveRange(0, stepIndex + 1);
+            for (var i = 0; i <= leafIndex; i++)
+            {
+                stack.TryRemoveNode(stack.Flatten()[0].NodeId, out _);
+            }
 
             if (!ModifierStackStorage.Save(doc, objectId, spec))
             {
@@ -777,12 +1168,12 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         message =
-            stepIndex == 0
+            leafIndex == 0
                 ? "Applied modifier and removed it from the stack."
-                : $"Applied {stepIndex + 1} modifiers and removed them from the stack.";
+                : $"Applied {leafIndex + 1} modifiers and removed them from the stack.";
 
         Log(
-            $"ApplyThroughStep completed. Object={objectId}, AppliedCount={stepIndex + 1}, RemainingSteps={spec.Steps.Count}"
+            $"ApplyThroughStep completed. Object={objectId}, AppliedCount={leafIndex + 1}, RemainingSteps={stack.Flatten().Count}"
         );
 
         return true;
@@ -802,7 +1193,8 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (spec.Steps.Count == 0)
+        var flat = new ModifierStack(spec).Flatten();
+        if (flat.Count == 0)
         {
             message = "Selected object does not have any modifier steps.";
             Log(message);
@@ -814,8 +1206,8 @@ internal sealed class ModifierEngine : IDisposable
                 doc,
                 objectId,
                 rhinoObject,
-                spec,
-                spec.Steps.Count - 1,
+                flat,
+                flat.Count - 1,
                 out var evaluatedGeometry,
                 out var evaluationError
             )
@@ -910,11 +1302,14 @@ internal sealed class ModifierEngine : IDisposable
         foreach (var rhinoObject in doc.Objects)
         {
             var spec = ModifierStackStorage.Load(rhinoObject);
-            foreach (var step in spec.Steps)
+            foreach (var modifier in new ModifierStack(spec).Flatten())
             {
-                if (!string.IsNullOrWhiteSpace(step.Path))
+                if (
+                    modifier is GrasshopperModifierSpec grasshopper
+                    && !string.IsNullOrWhiteSpace(grasshopper.Path)
+                )
                 {
-                    paths.Add(step.Path);
+                    paths.Add(grasshopper.Path);
                 }
             }
         }
@@ -986,12 +1381,13 @@ internal sealed class ModifierEngine : IDisposable
     private void OnReplaceRhinoObject(object? sender, RhinoReplaceObjectEventArgs e)
     {
         var spec = ModifierStackStorage.Load(e.NewRhinoObject);
-        if (spec.Steps.Count == 0)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0)
         {
             return;
         }
 
-        Log($"Rhino object replaced. Object={e.ObjectId}, Steps={spec.Steps.Count}");
+        Log($"Rhino object replaced. Object={e.ObjectId}, Steps={stepCount}");
         var runtime = GetOrCreateStackRuntime(e.Document, e.ObjectId);
         runtime.RootRevision = NextRevision();
         QueueEvaluation(e.Document, e.ObjectId);
@@ -1015,12 +1411,13 @@ internal sealed class ModifierEngine : IDisposable
 
         var rhinoObject = doc.Objects.FindId(e.ObjectId);
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (spec.Steps.Count == 0)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0)
         {
             return;
         }
 
-        Log($"Rhino object undeleted. Object={e.ObjectId}, Steps={spec.Steps.Count}");
+        Log($"Rhino object undeleted. Object={e.ObjectId}, Steps={stepCount}");
         var runtime = GetOrCreateStackRuntime(doc, e.ObjectId);
         runtime.RootRevision = NextRevision();
         QueueEvaluation(doc, e.ObjectId);
@@ -1112,7 +1509,8 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var spec = ModifierStackStorage.Load(rhinoObject);
-        if (spec.Steps.Count == 0)
+        var flat = new ModifierStack(spec).Flatten();
+        if (flat.Count == 0)
         {
             Log($"EvaluateStack aborted. Object={objectId} has no modifier steps.");
             RemoveStackRuntime(doc, objectId);
@@ -1120,13 +1518,13 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         Log(
-            $"Stack spec loaded. Object={DescribeRhinoObject(rhinoObject)}, StepCount={spec.Steps.Count}"
+            $"Stack spec loaded. Object={DescribeRhinoObject(rhinoObject)}, StepCount={flat.Count}"
         );
 
         var runtime = GetOrCreateStackRuntime(doc, objectId);
-        runtime.EnsureStepCapacity(spec.Steps.Count);
-        runtime.ClearErrors(spec.Steps.Count);
-        runtime.ClearAllOutputs(spec.Steps.Count);
+        runtime.EnsureStepCapacity(flat.Count);
+        runtime.ClearErrors(flat.Count);
+        runtime.ClearAllOutputs(flat.Count);
 
         if (TryGetObjectPreviewCycleError(doc, objectId, spec, out var cycleError))
         {
@@ -1171,7 +1569,7 @@ internal sealed class ModifierEngine : IDisposable
             $"Source geometry ready. Count={currentGeometry.Count}. {DescribeGeometry(currentGeometry)}"
         );
 
-        _executor.EvaluateStack(doc, objectId, currentGeometry, spec, runtime);
+        _executor.EvaluateStack(doc, objectId, currentGeometry, flat, runtime);
         MarkObjectClean(doc, objectId);
 
         if (runtime.PreviewGeometry.Count == 0 && string.IsNullOrWhiteSpace(runtime.ErrorMessage))
@@ -1290,7 +1688,7 @@ internal sealed class ModifierEngine : IDisposable
         Guid? SourceObjectId
     ) GetModifiedGeometryToggleState(
         RhinoDoc doc,
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor input
     )
     {
@@ -1322,12 +1720,44 @@ internal sealed class ModifierEngine : IDisposable
             : (false, false, null);
     }
 
+    /// <summary>
+    /// Resolves a panel row index (position in the pre-order list of all nodes,
+    /// including groups) to the underlying node.
+    /// </summary>
+    private static ModifierNodeSpec? GetNodeAtRowIndex(ModifierStack stack, int rowIndex)
+    {
+        var nodes = stack.AllNodesInPreOrder();
+        return rowIndex >= 0 && rowIndex < nodes.Count ? nodes[rowIndex] : null;
+    }
+
+    /// <summary>
+    /// Resolves a panel row index to a leaf modifier, rejecting group rows.
+    /// </summary>
+    private static ModifierSpec? GetLeafAtRowIndex(
+        ModifierStack stack,
+        int rowIndex,
+        out string error
+    )
+    {
+        error = string.Empty;
+        var node = GetNodeAtRowIndex(stack, rowIndex);
+        if (node is ModifierSpec modifier)
+        {
+            return modifier;
+        }
+
+        error = node is null
+            ? "Step index is out of range."
+            : "This action requires selecting a single modifier, not a group.";
+        return null;
+    }
+
     private bool TryValidateInputLink(
         RhinoDoc doc,
         ModifierStackSpec spec,
         int targetIndex,
         string inputId,
-        Guid sourceStepId,
+        Guid sourceNodeId,
         string sourceOutputId,
         out ModifierInputLinkSpec linkSpec,
         out string message
@@ -1335,13 +1765,22 @@ internal sealed class ModifierEngine : IDisposable
     {
         linkSpec = null!;
         message = string.Empty;
-        if (targetIndex < 0 || targetIndex >= spec.Steps.Count)
+        var steps = new ModifierStack(spec).Flatten();
+        if (targetIndex < 0 || targetIndex >= steps.Count)
         {
             message = "Step index is out of range.";
             return false;
         }
 
-        var sourceIndex = spec.Steps.FindIndex(step => step.StepId == sourceStepId);
+        var sourceIndex = -1;
+        for (var i = 0; i < steps.Count; i++)
+        {
+            if (steps[i].NodeId == sourceNodeId)
+            {
+                sourceIndex = i;
+                break;
+            }
+        }
         if (sourceIndex < 0)
         {
             message = "The linked source modifier no longer exists.";
@@ -1354,11 +1793,11 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        var targetStep = spec.Steps[targetIndex];
+        var targetStep = steps[targetIndex];
         if (
             !_executor.TryGetDefinitionContract(
                 doc,
-                targetStep.Path,
+                targetStep,
                 out var targetContract,
                 out var targetError
             )
@@ -1377,7 +1816,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        var sourceStep = spec.Steps[sourceIndex];
+        var sourceStep = steps[sourceIndex];
         if (!sourceStep.Enabled)
         {
             message = "The linked source modifier is disabled.";
@@ -1387,7 +1826,7 @@ internal sealed class ModifierEngine : IDisposable
         if (
             !_executor.TryGetDefinitionContract(
                 doc,
-                sourceStep.Path,
+                sourceStep,
                 out var sourceContract,
                 out var sourceError
             )
@@ -1415,9 +1854,9 @@ internal sealed class ModifierEngine : IDisposable
 
         linkSpec = new ModifierInputLinkSpec
         {
-            SourceStepId = sourceStepId,
+            SourceNodeId = sourceNodeId,
             SourceOutputId = sourceOutputId,
-            SourceStepLabel = Path.GetFileName(sourceStep.Path),
+            SourceStepLabel = ModifierDisplayNames.GetStepLabel(sourceStep),
             SourceOutputLabel = sourceOutput.Label,
         };
         return true;
@@ -1436,7 +1875,8 @@ internal sealed class ModifierEngine : IDisposable
     {
         linkSpec = null!;
         message = string.Empty;
-        if (targetIndex < 0 || targetIndex >= spec.Steps.Count)
+        var steps = new ModifierStack(spec).Flatten();
+        if (targetIndex < 0 || targetIndex >= steps.Count)
         {
             message = "Step index is out of range.";
             return false;
@@ -1454,11 +1894,11 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        var targetStep = spec.Steps[targetIndex];
+        var targetStep = steps[targetIndex];
         if (
             !_executor.TryGetDefinitionContract(
                 doc,
-                targetStep.Path,
+                targetStep,
                 out var targetContract,
                 out var targetError
             )
@@ -1491,19 +1931,20 @@ internal sealed class ModifierEngine : IDisposable
         }
 
         var sourceSpec = ModifierStackStorage.Load(sourceRhinoObject);
-        if (sourceSpec.Steps.Count == 0)
+        if (new ModifierStack(sourceSpec).Flatten().Count == 0)
         {
             message = "The selected source object does not have any modifiers.";
             return false;
         }
 
         var candidateSpec = spec.Clone();
-        candidateSpec.Steps[targetIndex].InputLinks[inputId] = new ModifierInputLinkSpec
-        {
-            SourceKind = ModifierInputLinkSourceKind.ObjectPreview,
-            SourceObjectId = sourceObjectId,
-            SourceObjectLabel = DescribeLinkedObject(sourceRhinoObject),
-        };
+        new ModifierStack(candidateSpec).Flatten()[targetIndex].InputLinks[inputId] =
+            new ModifierInputLinkSpec
+            {
+                SourceKind = ModifierInputLinkSourceKind.ObjectPreview,
+                SourceObjectId = sourceObjectId,
+                SourceObjectLabel = DescribeLinkedObject(sourceRhinoObject),
+            };
 
         if (
             !ModifierEngine.TryValidateObjectPreviewGraph(
@@ -1581,7 +2022,7 @@ internal sealed class ModifierEngine : IDisposable
                 );
                 yield return new ModifierInputLinkOptionPanelState
                 {
-                    SourceStepId = sourceStepContext.Step.StepId,
+                    SourceStepId = sourceStepContext.Step.NodeId,
                     SourceStepIndex = sourceStepContext.Index,
                     SourceStepLabel = sourceStepContext.DisplayName,
                     SourceOutputId = output.Id,
@@ -1597,7 +2038,7 @@ internal sealed class ModifierEngine : IDisposable
                             input.Id,
                             out var activeLink
                         )
-                        && activeLink.SourceStepId == sourceStepContext.Step.StepId
+                        && activeLink.SourceNodeId == sourceStepContext.Step.NodeId
                         && activeLink.SourceOutputId.Equals(output.Id, StringComparison.Ordinal),
                 };
             }
@@ -1631,7 +2072,7 @@ internal sealed class ModifierEngine : IDisposable
         var sourceStepLabel = GetStoredStepLabel(activeLink);
         var sourceOutputLabel = GetStoredOutputLabel(activeLink);
         var sourceStepContext = stepContexts.FirstOrDefault(candidate =>
-            candidate.Step.StepId == activeLink.SourceStepId
+            candidate.Step.NodeId == activeLink.SourceNodeId
         );
         if (sourceStepContext is null)
         {
@@ -1731,7 +2172,7 @@ internal sealed class ModifierEngine : IDisposable
     private LinkPresentationState BuildObjectPreviewLinkPresentationState(
         RhinoDoc doc,
         Guid objectId,
-        IEnumerable<ModifierStepSpec> steps,
+        IEnumerable<ModifierSpec> steps,
         ModifierInputLinkSpec activeLink
     )
     {
@@ -1779,7 +2220,7 @@ internal sealed class ModifierEngine : IDisposable
 
         sourceObjectLabel = DescribeLinkedObject(sourceRhinoObject);
         var sourceSpec = ModifierStackStorage.Load(sourceRhinoObject);
-        if (sourceSpec.Steps.Count == 0)
+        if (new ModifierStack(sourceSpec).Flatten().Count == 0)
         {
             return new LinkPresentationState(
                 true,
@@ -1860,7 +2301,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static bool TryGetInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1879,7 +2320,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static bool TryGetStepOutputInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1897,7 +2338,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static bool TryGetObjectPreviewInputLink(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         string inputId,
         out ModifierInputLinkSpec linkSpec
     )
@@ -1923,7 +2364,7 @@ internal sealed class ModifierEngine : IDisposable
 
         return storedLink.SourceKind switch
         {
-            ModifierInputLinkSourceKind.StepOutput => storedLink.SourceStepId != Guid.Empty
+            ModifierInputLinkSourceKind.StepOutput => storedLink.SourceNodeId != Guid.Empty
                 && !string.IsNullOrWhiteSpace(storedLink.SourceOutputId),
             ModifierInputLinkSourceKind.ObjectPreview => storedLink.SourceObjectId != Guid.Empty,
             _ => false,
@@ -1931,7 +2372,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static bool TryGetExplicitInputValue(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor descriptor,
         out string serializedValue
     )
@@ -1947,7 +2388,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static string GetDisplayedInputValue(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor descriptor
     )
     {
@@ -1960,7 +2401,7 @@ internal sealed class ModifierEngine : IDisposable
     }
 
     private static bool IsMissingRequiredInput(
-        ModifierStepSpec stepSpec,
+        ModifierSpec stepSpec,
         ModifierInputDescriptor descriptor
     )
     {
@@ -2062,7 +2503,7 @@ internal sealed class ModifierEngine : IDisposable
             }
 
             var sourceSpec = ModifierStackStorage.Load(sourceRhinoObject);
-            if (sourceSpec.Steps.Count == 0)
+            if (new ModifierStack(sourceSpec).Flatten().Count == 0)
             {
                 continue;
             }
@@ -2089,7 +2530,7 @@ internal sealed class ModifierEngine : IDisposable
         RhinoDoc doc,
         Guid objectId,
         RhinoObject rhinoObject,
-        ModifierStackSpec spec,
+        IReadOnlyList<ModifierSpec> modifiers,
         int stepIndex,
         out List<GeometryBase> outputGeometry,
         out string error
@@ -2114,7 +2555,7 @@ internal sealed class ModifierEngine : IDisposable
         return _executor.TryEvaluateStackThroughStep(
             doc,
             runtime,
-            spec,
+            modifiers,
             stepIndex,
             currentGeometry,
             out outputGeometry,
@@ -2300,11 +2741,11 @@ internal sealed class ModifierEngine : IDisposable
 
     private static IEnumerable<Guid> GetActiveObjectPreviewDependencies(ModifierStackSpec spec)
     {
-        return GetActiveObjectPreviewDependencies(spec.Steps);
+        return GetActiveObjectPreviewDependencies(new ModifierStack(spec).Flatten());
     }
 
     private static IEnumerable<Guid> GetActiveObjectPreviewDependencies(
-        IEnumerable<ModifierStepSpec> steps
+        IEnumerable<ModifierSpec> steps
     )
     {
         foreach (var step in steps)
@@ -2445,7 +2886,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        return ModifierStackStorage.Load(rhinoObject).Steps.Count > 0;
+        return new ModifierStack(ModifierStackStorage.Load(rhinoObject)).Flatten().Count > 0;
     }
 
     private static string DescribeLinkedObject(RhinoObject? rhinoObject, Guid objectId)
@@ -2462,7 +2903,8 @@ internal sealed class ModifierEngine : IDisposable
         int fromStepIndex
     )
     {
-        if (spec.Steps.Count == 0)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0)
         {
             Log($"InvalidateStackFromStep removing empty stack. Object={objectId}");
             RemoveStackRuntime(doc, objectId);
@@ -2471,10 +2913,10 @@ internal sealed class ModifierEngine : IDisposable
 
         UpdateObjectDependencies(doc, objectId, spec);
         var runtime = GetOrCreateStackRuntime(doc, objectId);
-        runtime.EnsureStepCapacity(spec.Steps.Count);
+        runtime.EnsureStepCapacity(stepCount);
         runtime.InvalidateFromStep(fromStepIndex);
         Log(
-            $"Stack invalidated from step {fromStepIndex}. Object={objectId}, StepCount={spec.Steps.Count}"
+            $"Stack invalidated from step {fromStepIndex}. Object={objectId}, StepCount={stepCount}"
         );
         QueueEvaluation(doc, objectId);
         RaiseStateChanged();
@@ -2482,7 +2924,8 @@ internal sealed class ModifierEngine : IDisposable
 
     private void ResetStackRuntime(RhinoDoc doc, Guid objectId, ModifierStackSpec spec)
     {
-        if (spec.Steps.Count == 0)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0)
         {
             Log($"ResetStackRuntime removing empty stack. Object={objectId}");
             RemoveStackRuntime(doc, objectId);
@@ -2491,10 +2934,10 @@ internal sealed class ModifierEngine : IDisposable
 
         UpdateObjectDependencies(doc, objectId, spec);
         var runtime = GetOrCreateStackRuntime(doc, objectId);
-        runtime.Reset(spec.Steps.Count);
+        runtime.Reset(stepCount);
         runtime.RootRevision = NextRevision();
         Log(
-            $"Stack runtime reset. Object={objectId}, StepCount={spec.Steps.Count}, RootRevision={runtime.RootRevision}"
+            $"Stack runtime reset. Object={objectId}, StepCount={stepCount}, RootRevision={runtime.RootRevision}"
         );
         QueueEvaluation(doc, objectId);
         RaiseStateChanged();
@@ -2502,17 +2945,18 @@ internal sealed class ModifierEngine : IDisposable
 
     private void EnsureSavedStackRuntime(RhinoDoc doc, Guid objectId, ModifierStackSpec spec)
     {
-        if (spec.Steps.Count == 0 || TryGetStackRuntime(doc, objectId) is not null)
+        var stepCount = new ModifierStack(spec).Flatten().Count;
+        if (stepCount == 0 || TryGetStackRuntime(doc, objectId) is not null)
         {
             return;
         }
 
         UpdateObjectDependencies(doc, objectId, spec);
         var runtime = GetOrCreateStackRuntime(doc, objectId);
-        runtime.Reset(spec.Steps.Count);
+        runtime.Reset(stepCount);
         runtime.RootRevision = NextRevision();
         Log(
-            $"Saved stack runtime restored lazily. Object={objectId}, StepCount={spec.Steps.Count}, RootRevision={runtime.RootRevision}"
+            $"Saved stack runtime restored lazily. Object={objectId}, StepCount={stepCount}, RootRevision={runtime.RootRevision}"
         );
         QueueEvaluation(doc, objectId);
     }
@@ -2523,7 +2967,7 @@ internal sealed class ModifierEngine : IDisposable
         foreach (var rhinoObject in doc.Objects)
         {
             var spec = ModifierStackStorage.Load(rhinoObject);
-            if (spec.Steps.Count == 0)
+            if (new ModifierStack(spec).Flatten().Count == 0)
             {
                 continue;
             }

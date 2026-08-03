@@ -118,7 +118,9 @@ internal static class EmbeddedDefinitionStorage
 
     private static string ComputeHash(byte[] bytes)
     {
-        return BitConverter.ToString(SHA256.HashData(bytes)).Replace("-", string.Empty);
+        // SHA256.HashData is .NET 5+ only; use the net48-compatible pattern (identical output).
+        using var sha = SHA256.Create();
+        return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty);
     }
 
     private readonly record struct EmbeddedFileEntry(
