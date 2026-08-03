@@ -145,7 +145,8 @@ namespace RhinoModifiers.Runtime
     /// </summary>
     internal sealed record PanelStepContext(
         int Index,
-        ModifierStepSpec Step,
+        ModifierSpec Step,
+        ModifierKind Kind,
         string DisplayName,
         DefinitionContract? Contract,
         string ContractError

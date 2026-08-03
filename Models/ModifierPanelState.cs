@@ -19,6 +19,7 @@ internal sealed class ModifierPanelState
 
 internal sealed class ModifierStepPanelState
 {
+    /// <summary>Position of this row in the panel's pre-order list (groups included).</summary>
     public int Index { get; init; }
 
     public Guid StepId { get; init; }
@@ -36,6 +37,23 @@ internal sealed class ModifierStepPanelState
 
     public IReadOnlyList<ModifierStepOutputPanelState> Outputs { get; init; } =
         Array.Empty<ModifierStepOutputPanelState>();
+
+    /// <summary>True when this row is a group container rather than a modifier.</summary>
+    public bool IsGroup { get; init; }
+
+    /// <summary>Nesting depth of this row (0 = root level).</summary>
+    public int Depth { get; init; }
+
+    /// <summary>NodeId of the containing group, or <see cref="Guid.Empty"/> at root.</summary>
+    public Guid ParentNodeId { get; init; }
+
+    public ModifierKind Kind { get; init; }
+
+    /// <summary>Group display name (empty for modifier rows).</summary>
+    public string Name { get; init; } = string.Empty;
+
+    /// <summary>Index of this modifier in the flattened evaluation list, or -1 for groups.</summary>
+    public int LeafIndex { get; init; } = -1;
 }
 
 internal enum ModifierIoKind
@@ -50,6 +68,17 @@ internal enum ModifierIoKind
     Color,
     Geometry,
     ValueList,
+}
+
+/// <summary>
+/// The type of a modifier node in the stack. Groups are containers, all other values
+/// are evaluable modifier kinds.
+/// </summary>
+internal enum ModifierKind
+{
+    Group = 0,
+    Grasshopper = 1,
+    Native = 2,
 }
 
 internal sealed class ModifierStepInputPanelState

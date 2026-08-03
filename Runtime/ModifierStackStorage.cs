@@ -42,6 +42,9 @@ internal static class ModifierStackStorage
         }
         catch
         {
+            // Old beta serialization shapes (e.g. the flat "Steps" list) and any other
+            // unreadable payloads simply produce an empty stack. The project is in beta
+            // and does not migrate legacy data.
             return new ModifierStackSpec();
         }
     }
@@ -55,7 +58,7 @@ internal static class ModifierStackStorage
         }
 
         var attributes = rhinoObject.Attributes.Duplicate();
-        if (spec.Steps.Count == 0)
+        if (spec.Nodes.Count == 0)
         {
             attributes.UserDictionary.Remove(ModifierStackSpec.UserDictionaryKey);
         }
@@ -71,18 +74,44 @@ internal static class ModifierStackStorage
     private static void Normalize(ModifierStackSpec spec)
     {
         spec.Version = 1;
-        spec.Steps ??= new List<ModifierStepSpec>();
+        spec.Nodes ??= new List<ModifierNodeSpec>();
 
-        var seenStepIds = new HashSet<Guid>();
-        foreach (var step in spec.Steps)
+        var seenNodeIds = new HashSet<Guid>();
+        NormalizeNodes(spec.Nodes, seenNodeIds);
+    }
+
+    private static void NormalizeNodes(List<ModifierNodeSpec> nodes, HashSet<Guid> seenNodeIds)
+    {
+        if (nodes is null)
         {
-            step.InputValues ??= new Dictionary<string, string>();
-            step.InputLinks ??= new Dictionary<string, ModifierInputLinkSpec>();
+            return;
+        }
 
-            if (step.StepId == Guid.Empty || !seenStepIds.Add(step.StepId))
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var node = nodes[i];
+            if (node is null)
             {
-                step.StepId = Guid.NewGuid();
-                seenStepIds.Add(step.StepId);
+                nodes.RemoveAt(i);
+                i--;
+                continue;
+            }
+
+            if (node.NodeId == Guid.Empty || !seenNodeIds.Add(node.NodeId))
+            {
+                node.NodeId = Guid.NewGuid();
+                seenNodeIds.Add(node.NodeId);
+            }
+
+            if (node is ModifierGroupSpec group)
+            {
+                group.Children ??= new List<ModifierNodeSpec>();
+                NormalizeNodes(group.Children, seenNodeIds);
+            }
+            else if (node is ModifierSpec modifier)
+            {
+                modifier.InputValues ??= new Dictionary<string, string>();
+                modifier.InputLinks ??= new Dictionary<string, ModifierInputLinkSpec>();
             }
         }
     }

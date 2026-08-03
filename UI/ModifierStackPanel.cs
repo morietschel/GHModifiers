@@ -12,6 +12,7 @@ using Rhino.Input;
 using Rhino.UI;
 using RhinoModifiers.Models;
 using RhinoModifiers.Runtime;
+using RhinoModifiers.Runtime.Modifiers;
 
 namespace RhinoModifiers.UI;
 
@@ -53,6 +54,7 @@ public sealed class ModifierStackPanel : Panel
     private readonly HashSet<string> _expandedStepKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> _selectedStepKeys = new(StringComparer.Ordinal);
     private readonly HashSet<string> _collapsedSectionKeys = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _collapsedGroupKeys = new(StringComparer.Ordinal);
     private string? _lastPrimarySelectedStepKey;
 
     private bool _isUpdatingDefinitionPicker;
@@ -377,7 +379,45 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        TryAddStep(state, dialog.FileName);
+        // Add the modifier (into the selected group when one is selected) and wire up
+        // the chosen script in one go.
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.AddNode(
+                doc,
+                state.SelectedObjectId.Value,
+                new GrasshopperModifierSpec { Enabled = true },
+                GetSelectedGroupNodeId(),
+                out var addedNodeId,
+                out var addMessage
+            )
+        )
+        {
+            MessageBox.Show(addMessage, MessageBoxType.Error);
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.SetModifierPath(
+                doc,
+                state.SelectedObjectId.Value,
+                addedNodeId,
+                dialog.FileName,
+                out var setPathMessage
+            )
+        )
+        {
+            MessageBox.Show(setPathMessage, MessageBoxType.Error);
+            return;
+        }
+
+        RememberImportedDefinitions(dialog.FileName);
+
+        if (!string.IsNullOrWhiteSpace(setPathMessage))
+        {
+            RhinoApp.WriteLine(setPathMessage);
+        }
+
+        RefreshView();
     }
 
     private void OnRefreshClicked(object? sender, EventArgs e)
@@ -503,14 +543,6 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        // Subtract 1 because placeholder is at index 0
-        var definitionIndex = selectedIndex - 1;
-        if (definitionIndex < 0 || definitionIndex >= _definitionChoices.Count)
-        {
-            ResetDefinitionPicker();
-            return;
-        }
-
         var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
         if (!state.CanEdit || !state.SelectedObjectId.HasValue)
         {
@@ -518,8 +550,114 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        TryAddStep(state, _definitionChoices[definitionIndex].FullPath);
+        if (selectedIndex == 1)
+        {
+            AddGroup(state);
+        }
+        else if (selectedIndex == 2)
+        {
+            AddEmptyGrasshopperModifier(state);
+        }
+        else if (selectedIndex == 3)
+        {
+            AddNativeModifier(state, NativeModifiers.ExtrudeKind);
+        }
+
         ResetDefinitionPicker();
+    }
+
+    private void AddNativeModifier(ModifierPanelState state, string nativeKind)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null || !state.SelectedObjectId.HasValue)
+        {
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.AddNode(
+                doc,
+                state.SelectedObjectId.Value,
+                new NativeModifierSpec { NativeKind = nativeKind, Enabled = true },
+                GetSelectedGroupNodeId(),
+                out _,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        RefreshView();
+    }
+
+    private void AddGroup(ModifierPanelState state)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null || !state.SelectedObjectId.HasValue)
+        {
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.AddNode(
+                doc,
+                state.SelectedObjectId.Value,
+                new ModifierGroupSpec { Name = "Group" },
+                GetSelectedGroupNodeId(),
+                out _,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            RhinoApp.WriteLine(message);
+        }
+
+        RefreshView();
+    }
+
+    private void AddEmptyGrasshopperModifier(ModifierPanelState state)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null || !state.SelectedObjectId.HasValue)
+        {
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.AddNode(
+                doc,
+                state.SelectedObjectId.Value,
+                new GrasshopperModifierSpec { Enabled = true },
+                GetSelectedGroupNodeId(),
+                out _,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        RefreshView();
+    }
+
+    /// <summary>
+    /// Returns the id of the selected group when exactly one group row is selected;
+    /// used as the insertion target for new groups/modifiers. Null means root level.
+    /// </summary>
+    private Guid? GetSelectedGroupNodeId()
+    {
+        var state = RhinoModifiersPlugin.Instance.Engine.GetPanelState(RhinoDoc.ActiveDoc);
+        var selected = GetSelectedSteps(state);
+        return selected.Count == 1 && selected[0].IsGroup ? selected[0].StepId : null;
     }
 
     private void RefreshView()
@@ -530,13 +668,15 @@ public sealed class ModifierStackPanel : Panel
         NormalizeExpandedSteps(state);
         NormalizeSelectedSteps(state);
         NormalizeCollapsedSections(state);
+        NormalizeCollapsedGroups(state);
 
         var canEdit = state.CanEdit && state.SelectedObjectId.HasValue;
-        var canRefresh = canEdit && state.Steps.Count > 0;
-        var canBake = canEdit && state.Steps.Count > 0;
+        var leafCount = state.Steps.Count(step => !step.IsGroup);
+        var canRefresh = canEdit && leafCount > 0;
+        var canBake = canEdit && leafCount > 0;
         var selectedSteps = GetSelectedSteps(state);
 
-        _definitionPicker.Enabled = canEdit && _definitionChoices.Count > 0;
+        _definitionPicker.Enabled = canEdit;
         _addButton.Enabled = canEdit;
         _refreshButton.Enabled = canRefresh;
         _bakeButton.Enabled = canBake;
@@ -546,7 +686,7 @@ public sealed class ModifierStackPanel : Panel
             canEdit && selectedSteps.Any(step => !string.IsNullOrWhiteSpace(step.FullPath));
         _moveUpSelectedButton.Enabled = canEdit && selectedSteps.Any(step => step.Index > 0);
         _moveDownSelectedButton.Enabled =
-            canEdit && selectedSteps.Any(step => step.Index < state.Steps.Count - 1);
+            canEdit && selectedSteps.Any(step => CanMoveDown(state, step));
         _applySelectedButton.Enabled = canEdit && selectedSteps.Count == 1;
         _deleteSelectedButton.Enabled = canEdit && selectedSteps.Count > 0;
 
@@ -613,12 +753,24 @@ public sealed class ModifierStackPanel : Panel
             for (var i = 0; i < state.Steps.Count; i++)
             {
                 var step = state.Steps[i];
-                rows.Items.Add(
-                    new StackLayoutItem(
-                        CreateStepRow(state.SelectedObjectId.Value, step),
-                        HorizontalAlignment.Stretch
-                    )
-                );
+                if (IsRowHiddenUnderCollapsedGroup(state, step))
+                {
+                    continue;
+                }
+
+                var rowContent = step.IsGroup
+                    ? CreateGroupRow(state.SelectedObjectId.Value, step)
+                    : CreateStepRow(state.SelectedObjectId.Value, step);
+                if (step.Depth > 0)
+                {
+                    rowContent = new Panel
+                    {
+                        Content = rowContent,
+                        Padding = new Padding(step.Depth * StepDetailIndent, 0, 0, 0),
+                    };
+                }
+
+                rows.Items.Add(new StackLayoutItem(rowContent, HorizontalAlignment.Stretch));
             }
         }
 
@@ -633,47 +785,6 @@ public sealed class ModifierStackPanel : Panel
         );
 
         _rowsScrollable.Content = rows;
-    }
-
-    private bool TryAddStep(ModifierPanelState state, string path)
-    {
-        var doc = RhinoDoc.ActiveDoc;
-        if (doc is null)
-        {
-            return false;
-        }
-
-        if (!state.SelectedObjectId.HasValue)
-        {
-            MessageBox.Show(
-                "Select an object first to add a modifier step.",
-                MessageBoxType.Warning
-            );
-            return false;
-        }
-
-        if (
-            !RhinoModifiersPlugin.Instance.Engine.AddStep(
-                doc,
-                state.SelectedObjectId.Value,
-                path,
-                out var message
-            )
-        )
-        {
-            MessageBox.Show(message, MessageBoxType.Error);
-            return false;
-        }
-
-        RememberImportedDefinitions(path);
-
-        if (!string.IsNullOrWhiteSpace(message))
-        {
-            RhinoApp.WriteLine(message);
-        }
-
-        RefreshView();
-        return true;
     }
 
     private void RememberImportedDefinitions(string path)
@@ -733,8 +844,10 @@ public sealed class ModifierStackPanel : Panel
             {
                 var spec = ModifierStackStorage.Load(rhinoObject);
                 foreach (
-                    var path in spec
-                        .Steps.Select(step => step.Path)
+                    var path in new ModifierStack(spec)
+                        .Flatten()
+                        .OfType<GrasshopperModifierSpec>()
+                        .Select(modifier => modifier.Path)
                         .Where(path => !string.IsNullOrWhiteSpace(path))
                 )
                 {
@@ -816,8 +929,13 @@ public sealed class ModifierStackPanel : Panel
     private void UpdateDefinitionPickerFilter(string? searchText)
     {
         _isUpdatingDefinitionPicker = true;
-        var items = new List<string> { "Add Modifier..." }; // Placeholder first
-        items.AddRange(_definitionChoices.Select(choice => choice.DisplayName));
+        var items = new List<string>
+        {
+            "Add Modifier...", // Placeholder first
+            "Add Group",
+            "Grasshopper Definition",
+            "Extrude",
+        };
         _definitionPicker.DataStore = items;
         _definitionPicker.SelectedIndex = 0; // Select placeholder
         _isUpdatingDefinitionPicker = false;
@@ -1088,6 +1206,274 @@ public sealed class ModifierStackPanel : Panel
         };
     }
 
+    private void NormalizeCollapsedGroups(ModifierPanelState state)
+    {
+        var validKeys = state
+            .Steps.Where(step => step.IsGroup)
+            .Select(GetStepKey)
+            .ToHashSet(StringComparer.Ordinal);
+        _collapsedGroupKeys.RemoveWhere(key => !validKeys.Contains(key));
+    }
+
+    private bool IsRowHiddenUnderCollapsedGroup(
+        ModifierPanelState state,
+        ModifierStepPanelState step
+    )
+    {
+        var parentNodeId = step.ParentNodeId;
+        while (parentNodeId != Guid.Empty)
+        {
+            if (_collapsedGroupKeys.Contains(parentNodeId.ToString("N")))
+            {
+                return true;
+            }
+
+            var parent = state.Steps.FirstOrDefault(candidate => candidate.StepId == parentNodeId);
+            parentNodeId = parent?.ParentNodeId ?? Guid.Empty;
+        }
+
+        return false;
+    }
+
+    private Control CreateGroupRow(Guid objectId, ModifierStepPanelState group)
+    {
+        var isCollapsed = _collapsedGroupKeys.Contains(GetStepKey(group));
+        var isSelected = _selectedStepKeys.Contains(GetStepKey(group));
+        var headerBackground = isSelected ? SystemColors.Highlight : Colors.Transparent;
+        var headerTextColor = isSelected ? SystemColors.HighlightText : SystemColors.ControlText;
+
+        var container = new StackLayout
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 0,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
+
+        var disclosureButton = new Button
+        {
+            Image = GetDisclosureIcon(!isCollapsed),
+            ToolTip = isCollapsed ? "Expand" : "Collapse",
+            Width = 28,
+            Height = 20,
+        };
+        disclosureButton.Click += (_, _) => ToggleGroupCollapsed(group);
+
+        var nameTextBox = new TextBox
+        {
+            Text = group.Name,
+            PlaceholderText = "Group name",
+            TextColor = headerTextColor,
+        };
+        nameTextBox.LostFocus += (_, _) => CommitGroupName(objectId, group, nameTextBox.Text);
+        nameTextBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Keys.Enter)
+            {
+                CommitGroupName(objectId, group, nameTextBox.Text);
+            }
+        };
+
+        var headerRow = new TableLayout
+        {
+            Padding = new Padding(RowHeaderHorizontalPadding, RowHeaderVerticalPadding),
+            Spacing = new Size(4, 0),
+            Rows =
+            {
+                new TableRow(
+                    new TableCell(disclosureButton),
+                    new TableCell(nameTextBox, scaleWidth: true),
+                    new TableCell(new Panel { Width = 28 })
+                ),
+            },
+        };
+
+        var headerContainer = new Panel { Content = headerRow, BackgroundColor = headerBackground };
+        headerContainer.MouseDown += (_, e) =>
+            SelectStep(group, IsAdditiveSelection(e), IsRangeSelection(e));
+        headerRow.MouseDown += (_, e) =>
+            SelectStep(group, IsAdditiveSelection(e), IsRangeSelection(e));
+
+        container.Items.Add(new StackLayoutItem(headerContainer, HorizontalAlignment.Stretch));
+        container.Items.Add(
+            new StackLayoutItem(
+                new Panel { Height = 1, BackgroundColor = Colors.LightGrey },
+                HorizontalAlignment.Stretch
+            )
+        );
+
+        return container;
+    }
+
+    private void ToggleGroupCollapsed(ModifierStepPanelState group)
+    {
+        var key = GetStepKey(group);
+        if (!_collapsedGroupKeys.Add(key))
+        {
+            _collapsedGroupKeys.Remove(key);
+        }
+
+        RefreshView();
+    }
+
+    private void CommitGroupName(Guid objectId, ModifierStepPanelState group, string name)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.RenameNode(
+                doc,
+                objectId,
+                group.StepId,
+                name,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        RefreshView();
+    }
+
+    private Control CreateScriptSelector(Guid objectId, ModifierStepPanelState step)
+    {
+        var dropdown = new DropDown
+        {
+            ToolTip = "Choose the Grasshopper definition for this modifier.",
+        };
+
+        var items = new List<string> { "Select script..." };
+        items.AddRange(_definitionChoices.Select(choice => choice.DisplayName));
+        dropdown.DataStore = items;
+
+        if (!string.IsNullOrWhiteSpace(step.FullPath))
+        {
+            var currentIndex = _definitionChoices.FindIndex(choice =>
+                string.Equals(choice.FullPath, step.FullPath, StringComparison.OrdinalIgnoreCase)
+            );
+            dropdown.SelectedIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
+        }
+        else
+        {
+            dropdown.SelectedIndex = 0;
+        }
+
+        dropdown.SelectedIndexChanged += (_, _) =>
+        {
+            if (dropdown.SelectedIndex <= 0)
+            {
+                return;
+            }
+
+            var choiceIndex = dropdown.SelectedIndex - 1;
+            if (choiceIndex < 0 || choiceIndex >= _definitionChoices.Count)
+            {
+                return;
+            }
+
+            var doc = RhinoDoc.ActiveDoc;
+            if (doc is null)
+            {
+                return;
+            }
+
+            if (
+                !RhinoModifiersPlugin.Instance.Engine.SetModifierPath(
+                    doc,
+                    objectId,
+                    step.StepId,
+                    _definitionChoices[choiceIndex].FullPath,
+                    out var message
+                )
+            )
+            {
+                MessageBox.Show(message, MessageBoxType.Error);
+            }
+
+            RefreshView();
+        };
+
+        return dropdown;
+    }
+
+    private Control CreateScriptSelectorRow(Guid objectId, ModifierStepPanelState step)
+    {
+        return new StackLayout
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Items =
+            {
+                new StackLayoutItem(
+                    new Label { Text = "Script", VerticalAlignment = VerticalAlignment.Center }
+                ),
+                new StackLayoutItem(CreateScriptSelector(objectId, step), true),
+                new StackLayoutItem(CreateImportScriptButton(objectId, step)),
+            },
+        };
+    }
+
+    private Button CreateImportScriptButton(Guid objectId, ModifierStepPanelState step)
+    {
+        return CreateIconButton(
+            LoadRhinoIcon("Rhino.UI.Resources.svg.File_Open.svg"),
+            "Import a Grasshopper definition from file",
+            (_, _) => ImportScriptFromFile(objectId, step)
+        );
+    }
+
+    private void ImportScriptFromFile(Guid objectId, ModifierStepPanelState step)
+    {
+        var doc = RhinoDoc.ActiveDoc;
+        if (doc is null)
+        {
+            return;
+        }
+
+        using var dialog = new Eto.Forms.OpenFileDialog
+        {
+            Title = "Import Grasshopper Definition",
+            MultiSelect = false,
+        };
+        dialog.Filters.Add(new FileFilter("Grasshopper Definitions", ".gh", ".ghx"));
+
+        if (
+            dialog.ShowDialog(RhinoEtoApp.MainWindow) != DialogResult.Ok
+            || string.IsNullOrWhiteSpace(dialog.FileName)
+        )
+        {
+            return;
+        }
+
+        if (
+            !RhinoModifiersPlugin.Instance.Engine.SetModifierPath(
+                doc,
+                objectId,
+                step.StepId,
+                dialog.FileName,
+                out var message
+            )
+        )
+        {
+            MessageBox.Show(message, MessageBoxType.Error);
+            return;
+        }
+
+        RememberImportedDefinitions(dialog.FileName);
+
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            RhinoApp.WriteLine(message);
+        }
+
+        RefreshView();
+    }
+
     private Control CreateStepRow(Guid objectId, ModifierStepPanelState step)
     {
         var isExpanded = IsStepExpanded(step);
@@ -1119,8 +1505,18 @@ public sealed class ModifierStackPanel : Panel
             Spacing = 0,
             VerticalContentAlignment = VerticalAlignment.Center,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Items = { stepNameLabel, new StackLayoutItem(new Panel(), true) },
         };
+        if (step.Kind == ModifierKind.Grasshopper && string.IsNullOrWhiteSpace(step.FullPath))
+        {
+            // No script yet: the header hosts the script picker so the row can build out.
+            stepNameHost.Items.Add(new StackLayoutItem(CreateScriptSelector(objectId, step), true));
+            stepNameHost.Items.Add(new StackLayoutItem(CreateImportScriptButton(objectId, step)));
+        }
+        else
+        {
+            stepNameHost.Items.Add(new StackLayoutItem(CreateStepNameLabel(step, headerTextColor)));
+            stepNameHost.Items.Add(new StackLayoutItem(new Panel(), true));
+        }
 
         var headerRow = new TableLayout
         {
@@ -1173,6 +1569,16 @@ public sealed class ModifierStackPanel : Panel
                 Spacing = StepDetailSpacing,
                 Padding = new Padding(StepDetailIndent, 6, 0, 6),
             };
+
+            if (step.Kind == ModifierKind.Grasshopper && !string.IsNullOrWhiteSpace(step.FullPath))
+            {
+                childContent.Items.Add(
+                    new StackLayoutItem(
+                        CreateScriptSelectorRow(objectId, step),
+                        HorizontalAlignment.Stretch
+                    )
+                );
+            }
 
             if (step.Inputs.Count > 0)
             {
@@ -1316,7 +1722,7 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        ApplyStep(state.SelectedObjectId.Value, selectedSteps[0].Index);
+        ApplyStep(state.SelectedObjectId.Value, state, selectedSteps[0]);
     }
 
     private void OnDeleteSelectedClicked(object? sender, EventArgs e)
@@ -1328,14 +1734,45 @@ public sealed class ModifierStackPanel : Panel
         }
 
         var selectedSteps = GetSelectedSteps(state).OrderByDescending(step => step.Index).ToList();
+        var deletedGroupKeys = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var step in selectedSteps)
         {
+            if (IsDescendantOfDeletedGroup(state, step, deletedGroupKeys))
+            {
+                continue;
+            }
+
             RemoveStep(state.SelectedObjectId.Value, step.Index);
+            if (step.IsGroup)
+            {
+                deletedGroupKeys.Add(GetStepKey(step));
+            }
         }
 
         _selectedStepKeys.Clear();
         RefreshView();
+    }
+
+    private static bool IsDescendantOfDeletedGroup(
+        ModifierPanelState state,
+        ModifierStepPanelState step,
+        HashSet<string> deletedGroupKeys
+    )
+    {
+        var parentNodeId = step.ParentNodeId;
+        while (parentNodeId != Guid.Empty)
+        {
+            if (deletedGroupKeys.Contains(parentNodeId.ToString("N")))
+            {
+                return true;
+            }
+
+            var parent = state.Steps.FirstOrDefault(candidate => candidate.StepId == parentNodeId);
+            parentNodeId = parent?.ParentNodeId ?? Guid.Empty;
+        }
+
+        return false;
     }
 
     private void MoveSelectedSteps(int offset)
@@ -1358,7 +1795,7 @@ public sealed class ModifierStackPanel : Panel
                 continue;
             }
 
-            if (offset > 0 && step.Index == state.Steps.Count - 1)
+            if (offset > 0 && !CanMoveDown(state, step))
             {
                 continue;
             }
@@ -1367,6 +1804,38 @@ public sealed class ModifierStackPanel : Panel
         }
 
         RefreshView();
+    }
+
+    /// <summary>
+    /// Whether the row can move down one step: when it has a next sibling (swap, or
+    /// enter a following group), or when it is the last child of a group and can exit
+    /// to just after that group (even when the group is the last item of the stack).
+    /// </summary>
+    private static bool CanMoveDown(ModifierPanelState state, ModifierStepPanelState step)
+    {
+        var hasNextSibling = state.Steps.Any(candidate =>
+            candidate.Index > step.Index && candidate.ParentNodeId == step.ParentNodeId
+        );
+        if (hasNextSibling)
+        {
+            return true;
+        }
+
+        return IsLastChildOfGroup(state, step);
+    }
+
+    private static bool IsLastChildOfGroup(ModifierPanelState state, ModifierStepPanelState step)
+    {
+        if (step.ParentNodeId == Guid.Empty)
+        {
+            return false;
+        }
+
+        // Pre-order contiguity: children of a group are consecutive, so the last child
+        // has no later row with the same parent.
+        return !state.Steps.Any(candidate =>
+            candidate.Index > step.Index && candidate.ParentNodeId == step.ParentNodeId
+        );
     }
 
     private Label CreateMessageLabel(string text, bool isError)
@@ -2706,7 +3175,11 @@ public sealed class ModifierStackPanel : Panel
         }
     }
 
-    private static void ApplyStep(Guid objectId, int stepIndex)
+    private static void ApplyStep(
+        Guid objectId,
+        ModifierPanelState state,
+        ModifierStepPanelState selected
+    )
     {
         var doc = RhinoDoc.ActiveDoc;
         if (doc is null)
@@ -2714,11 +3187,12 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
-        if (stepIndex > 0)
+        var applyCount = GetApplyThroughLeafCount(state, selected);
+        if (applyCount > 1)
         {
             var warning =
-                $"Apply Stack will bake modifiers 1 through {stepIndex + 1} into the selected Rhino object and remove those modifiers from the stack.\n\n"
-                + "This action is irreversible. Continue?";
+                $"Apply Stack will bake modifiers 1 through {applyCount} into the selected Rhino object and remove those modifiers from the stack.\n\n"
+                + "Continue?";
             var result = MessageBox.Show(
                 warning,
                 "Apply Stack",
@@ -2736,7 +3210,7 @@ public sealed class ModifierStackPanel : Panel
             !RhinoModifiersPlugin.Instance.Engine.ApplyThroughStep(
                 doc,
                 objectId,
-                stepIndex,
+                selected.Index,
                 out var message
             )
         )
@@ -2749,6 +3223,51 @@ public sealed class ModifierStackPanel : Panel
         {
             RhinoApp.WriteLine(message);
         }
+    }
+
+    /// <summary>
+    /// Number of modifiers the engine will apply when applying through the selected
+    /// row: the row's own leaf index plus one, or the last leaf inside a group subtree.
+    /// </summary>
+    private static int GetApplyThroughLeafCount(
+        ModifierPanelState state,
+        ModifierStepPanelState selected
+    )
+    {
+        var maxLeafIndex = selected.LeafIndex;
+        foreach (var candidate in state.Steps)
+        {
+            if (
+                candidate.LeafIndex > maxLeafIndex
+                && IsDescendantOfNode(state, candidate, selected.StepId)
+            )
+            {
+                maxLeafIndex = candidate.LeafIndex;
+            }
+        }
+
+        return maxLeafIndex + 1;
+    }
+
+    private static bool IsDescendantOfNode(
+        ModifierPanelState state,
+        ModifierStepPanelState candidate,
+        Guid ancestorNodeId
+    )
+    {
+        var parentNodeId = candidate.ParentNodeId;
+        while (parentNodeId != Guid.Empty)
+        {
+            if (parentNodeId == ancestorNodeId)
+            {
+                return true;
+            }
+
+            var parent = state.Steps.FirstOrDefault(row => row.StepId == parentNodeId);
+            parentNodeId = parent?.ParentNodeId ?? Guid.Empty;
+        }
+
+        return false;
     }
 
     private static void EditStepDefinition(string path)
