@@ -35,11 +35,16 @@ jobs:
       - name: Resolve tag, version, prerelease
         id: version
         shell: bash
+        # The dispatch input reaches the script through the environment, never through
+        # ${{ }} interpolation. Actions expands ${{ }} textually before bash starts, so an
+        # interpolated input is parsed as shell before the regex below can reject it.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            RAW_TAG="${{ github.event.inputs.tag }}"
+            RAW_TAG="${INPUT_TAG}"
           else
             RAW_TAG="${GITHUB_REF_NAME}"
           fi
