@@ -360,14 +360,29 @@ internal sealed class RuntimeExecutor : IDisposable
         ModifierSpec spec
     )
     {
-        var fullPath = spec is GrasshopperModifierSpec grasshopper
-            ? Path.GetFullPath(grasshopper.Path)
+        var rawPath = spec is GrasshopperModifierSpec grasshopper
+            ? grasshopper.Path
             : throw new InvalidOperationException(
                 $"Modifier '{spec.Name}' has no Grasshopper definition to evaluate."
             );
-        var lastWriteUtc = File.Exists(fullPath)
-            ? File.GetLastWriteTimeUtc(fullPath)
-            : DateTime.MinValue;
+
+        // Vet the path, obtain the bytes, and check them against the approval store before any of
+        // this reaches Grasshopper. An unapproved definition throws here and never loads.
+        if (
+            !DefinitionResolver.TryResolve(
+                doc,
+                rawPath,
+                out var definition,
+                out var pending,
+                out var resolveError
+            )
+        )
+        {
+            throw new DefinitionNotApprovedException(resolveError, pending);
+        }
+
+        var fullPath = definition.LoadPath;
+        var lastWriteUtc = definition.LastWriteUtc;
 
         var existing = runtime.StepRuntimes[index];
         if (
@@ -390,7 +405,7 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        var template = GetDefinitionTemplate(doc, fullPath, lastWriteUtc);
+        var template = GetDefinitionTemplate(definition);
         var document = GH_Document.DuplicateDocument(template.Document);
         Log($"Step {index} duplicated GH document. Modifier={Path.GetFileName(fullPath)}");
 
@@ -432,30 +447,15 @@ internal sealed class RuntimeExecutor : IDisposable
     /// <summary>
     /// Looks up or loads a Grasshopper definition template.
     /// </summary>
-    public DefinitionTemplate GetDefinitionTemplate(
-        RhinoDoc? doc,
-        string fullPath,
-        DateTime lastWriteUtc
-    )
+    /// <remarks>
+    /// Takes an already-resolved definition rather than a raw path. Resolution is where the
+    /// approval check lives, so requiring a <see cref="ResolvedDefinition"/> here makes it
+    /// impossible to reach the loader with an unvetted path.
+    /// </remarks>
+    public DefinitionTemplate GetDefinitionTemplate(ResolvedDefinition definition)
     {
-        var resolvedPath = fullPath;
-        var resolvedLastWrite = lastWriteUtc;
-
-        if (!File.Exists(resolvedPath))
-        {
-            if (
-                doc is not null
-                && EmbeddedDefinitionStorage.TryExtract(doc, resolvedPath, out var tempPath)
-            )
-            {
-                resolvedPath = tempPath;
-                resolvedLastWrite = File.GetLastWriteTimeUtc(resolvedPath);
-            }
-            else
-            {
-                throw new FileNotFoundException("Modifier file not found.", fullPath);
-            }
-        }
+        var resolvedPath = definition.LoadPath;
+        var resolvedLastWrite = definition.LastWriteUtc;
 
         if (
             _definitionCache.TryGetValue(resolvedPath, out var cached)
@@ -528,27 +528,25 @@ internal sealed class RuntimeExecutor : IDisposable
 
         try
         {
-            var fullPath = Path.GetFullPath(path);
-            DateTime lastWriteUtc;
-            if (File.Exists(fullPath))
-            {
-                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
-            }
-            else if (
-                doc is not null
-                && EmbeddedDefinitionStorage.TryExtract(doc, fullPath, out var tempPath)
+            // The same gate as the evaluation path, and it must be here too: building a contract
+            // solves a copy of the definition to discover default input values, which runs its
+            // script components. Gating only evaluation would leave selecting an object as a
+            // working execution vector.
+            if (
+                !DefinitionResolver.TryResolve(
+                    doc,
+                    path,
+                    out var definition,
+                    out _,
+                    out var resolveError
+                )
             )
             {
-                fullPath = tempPath;
-                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
-            }
-            else
-            {
-                error = $"Modifier file not found: {path}";
+                error = resolveError;
                 return false;
             }
 
-            contract = GetDefinitionTemplate(doc, fullPath, lastWriteUtc).Contract;
+            contract = GetDefinitionTemplate(definition).Contract;
             return true;
         }
         catch (Exception ex)
@@ -597,8 +595,11 @@ internal sealed class RuntimeExecutor : IDisposable
         return false;
     }
 
-    /// <inheritdoc/>
-    public void Dispose()
+    /// <summary>
+    /// Drops every cached definition template so the next evaluation reloads from source.
+    /// Used after an approval, since the previously blocked definition was never cached.
+    /// </summary>
+    public void ClearDefinitionCache()
     {
         foreach (var template in _definitionCache.Values)
         {
@@ -608,15 +609,25 @@ internal sealed class RuntimeExecutor : IDisposable
         _definitionCache.Clear();
     }
 
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        ClearDefinitionCache();
+    }
+
+    /// <summary>
+    /// The user's answer to the missing-plugin download prompt, remembered for this Rhino
+    /// session so a stack of several definitions does not ask repeatedly.
+    /// </summary>
+    private static bool? _allowPluginDownloadThisSession;
+
     private static GH_Document LoadDefinitionDocument(string fullPath)
     {
-        // Suppress missing plugin warnings by trying to auto load any missing plugins.
-        bool originalTryDownloadMissingPlugins = Grasshopper
-            .CentralSettings
-            .TryDownloadMissingPlugins;
-        Grasshopper.CentralSettings.TryDownloadMissingPlugins = true;
-
         var archive = new GH_Archive();
+
+        // Read with the user's own auto-download preference untouched. Forcing it on here would
+        // let the definition decide which third-party assemblies get fetched and loaded into
+        // this process.
         if (!archive.ReadFromFile(fullPath))
         {
             throw new InvalidOperationException(
@@ -624,7 +635,28 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        Grasshopper.CentralSettings.TryDownloadMissingPlugins = originalTryDownloadMissingPlugins;
+        var missingCount = CountUnresolvedComponents(archive);
+        if (missingCount > 0 && ShouldDownloadMissingPlugins(fullPath, missingCount))
+        {
+            bool original = Grasshopper.CentralSettings.TryDownloadMissingPlugins;
+            try
+            {
+                Grasshopper.CentralSettings.TryDownloadMissingPlugins = true;
+
+                // Re-read so the resolution happens with downloads permitted.
+                var retry = new GH_Archive();
+                if (retry.ReadFromFile(fullPath))
+                {
+                    archive = retry;
+                }
+            }
+            finally
+            {
+                // Restored in a finally so no failure path can leave auto-download enabled for
+                // the rest of the session.
+                Grasshopper.CentralSettings.TryDownloadMissingPlugins = original;
+            }
+        }
 
         var document = new GH_Document();
         if (!archive.ExtractObject(document, "Definition"))
@@ -636,6 +668,77 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         return document;
+    }
+
+    /// <summary>
+    /// Counts components in the archive that this Rhino cannot resolve to an installed plug-in.
+    /// </summary>
+    /// <remarks>
+    /// Returns 0 when the archive cannot be inspected. That is deliberate: the count only decides
+    /// whether to <em>offer</em> a download, so an inconclusive read fails closed and nothing is
+    /// fetched.
+    /// </remarks>
+    private static int CountUnresolvedComponents(GH_Archive archive)
+    {
+        try
+        {
+            var objects = archive
+                .GetRootNode?.FindChunk("Definition")
+                ?.FindChunk("DefinitionObjects");
+            if (objects is null)
+            {
+                return 0;
+            }
+
+            var count = objects.GetInt32("ObjectCount");
+            var missing = 0;
+            for (var i = 0; i < count; i++)
+            {
+                var objectChunk = objects.FindChunk("Object", i);
+                if (objectChunk is null)
+                {
+                    continue;
+                }
+
+                var componentGuid = objectChunk.GetGuid("GUID");
+                if (Grasshopper.Instances.ComponentServer.EmitObjectProxy(componentGuid) is null)
+                {
+                    missing++;
+                }
+            }
+
+            return missing;
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not inspect definition for missing plug-ins. {ex.Message}");
+            return 0;
+        }
+    }
+
+    private static bool ShouldDownloadMissingPlugins(string fullPath, int missingCount)
+    {
+        if (_allowPluginDownloadThisSession.HasValue)
+        {
+            return _allowPluginDownloadThisSession.Value;
+        }
+
+        var answer = Rhino.UI.Dialogs.ShowMessage(
+            $"'{Path.GetFileName(fullPath)}' uses {missingCount} component(s) from Grasshopper "
+                + "plug-ins that are not installed.\n\n"
+                + "Downloading them installs third-party code from the Grasshopper package "
+                + "server and loads it into Rhino.\n\n"
+                + "Download the missing plug-ins?",
+            "Missing Grasshopper plug-ins",
+            Rhino.UI.ShowMessageButton.YesNo,
+            Rhino.UI.ShowMessageIcon.Warning
+        );
+
+        _allowPluginDownloadThisSession = answer == Rhino.UI.ShowMessageResult.Yes;
+        Log(
+            $"Missing plug-in download {(_allowPluginDownloadThisSession.Value ? "allowed" : "declined")} for this session."
+        );
+        return _allowPluginDownloadThisSession.Value;
     }
 
     /// <summary>

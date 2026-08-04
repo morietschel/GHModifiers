@@ -69,26 +69,44 @@ internal static class EmbeddedDefinitionStorage
     }
 
     /// <summary>
-    /// Attempts to extract an embedded definition to a temporary file.
-    /// Returns <c>true</c> if a matching embedded file was found and written.
+    /// Reads an embedded definition's bytes without touching the filesystem.
     /// </summary>
-    public static bool TryExtract(RhinoDoc doc, string path, out string tempPath)
+    /// <remarks>
+    /// Callers hash these bytes and check them against <see cref="DefinitionTrust"/> before
+    /// anything is written to disk, so an unapproved payload never lands in the temp directory
+    /// and is never handed to the Grasshopper archive parser.
+    /// </remarks>
+    public static bool TryGetBytes(RhinoDoc doc, string path, out byte[] bytes)
     {
-        tempPath = string.Empty;
+        bytes = Array.Empty<byte>();
         var embedded = LoadEmbedded(doc);
         if (!embedded.TryGetValue(path, out var entry))
         {
             return false;
         }
 
-        var bytes = Convert.FromBase64String(entry.Base64);
+        bytes = Convert.FromBase64String(entry.Base64);
+        return true;
+    }
+
+    /// <summary>
+    /// Writes already-approved embedded bytes to a temporary file so Grasshopper can load them.
+    /// </summary>
+    /// <remarks>
+    /// This performs no trust check of its own. Call it only with bytes that
+    /// <see cref="DefinitionTrust.IsApproved"/> has cleared.
+    /// </remarks>
+    public static string WriteApprovedBytesToTemp(string path, byte[] bytes)
+    {
         var hash = ComputeHash(bytes);
         var tempDir = Path.Combine(Path.GetTempPath(), "Modifiers_Embedded", hash);
         Directory.CreateDirectory(tempDir);
 
-        tempPath = Path.Combine(tempDir, Path.GetFileName(path));
+        // Path.GetFileName strips directory and volume separators, so an attacker-supplied key
+        // cannot escape the hash directory.
+        var tempPath = Path.Combine(tempDir, Path.GetFileName(path));
         File.WriteAllBytes(tempPath, bytes);
-        return true;
+        return tempPath;
     }
 
     public static IReadOnlyList<string> GetEmbeddedPaths(RhinoDoc doc)

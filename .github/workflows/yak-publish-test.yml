@@ -17,6 +17,7 @@ permissions:
 env:
   YAK_SOURCE_URL: https://yak.rhino3d.com
   YAK_CLI_URL: https://files.mcneel.com/yak/tools/0.13.0/linux-x64/yak
+  YAK_CLI_SHA256: 0ecb054e56b49e57110b01cda62c50f3d1ae184c8129ace264a409ccc3070af9
   YAK_PACKAGE_NAME: object-modifiers
 
 jobs:
@@ -35,11 +36,16 @@ jobs:
       - name: Resolve tag, version, prerelease
         id: version
         shell: bash
+        # The dispatch input reaches the script through the environment, never through
+        # ${{ }} interpolation. Actions expands ${{ }} textually before bash starts, so an
+        # interpolated input is parsed as shell before the regex below can reject it.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            RAW_TAG="${{ github.event.inputs.tag }}"
+            RAW_TAG="${INPUT_TAG}"
           else
             RAW_TAG="${GITHUB_REF_NAME}"
           fi
@@ -76,6 +82,11 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "$YAK_CLI_URL" -o yak
+
+          # Verify before making it executable. This job holds YAK_TOKEN and contents: write,
+          # so a tampered binary here would run with access to both.
+          echo "${YAK_CLI_SHA256}  yak" | sha256sum -c -
+
           chmod +x yak
           ./yak --help >/dev/null
 

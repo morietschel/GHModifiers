@@ -5,6 +5,7 @@ using System.Linq;
 using Rhino;
 using Rhino.DocObjects;
 using Rhino.Geometry;
+using Rhino.UI;
 using RhinoModifiers.Models;
 using RhinoModifiers.Runtime.Modifiers;
 using RhinoModifiers.UI;
@@ -140,7 +141,85 @@ internal sealed class ModifierEngine : IDisposable
             SelectionLabel = selectionLabel,
             StatusMessage = runtimeMessage,
             Steps = steps,
+            PendingApprovals = CollectPendingApprovals(doc, stack),
         };
+    }
+
+    /// <summary>
+    /// Lists the definitions in this stack that are waiting on the user before they may run.
+    /// </summary>
+    /// <remarks>
+    /// Resolution is side-effect free: it reads bytes to hash them but writes nothing and loads
+    /// nothing, so calling this while merely displaying the panel cannot execute a definition.
+    /// Entries are de-duplicated so a definition used by several steps is approved once.
+    /// </remarks>
+    private static IReadOnlyList<PendingApproval> CollectPendingApprovals(
+        RhinoDoc doc,
+        ModifierStack stack
+    )
+    {
+        var pendingByKey = new Dictionary<string, PendingApproval>(
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        foreach (var modifier in stack.Flatten())
+        {
+            if (
+                modifier is not GrasshopperModifierSpec grasshopper
+                || string.IsNullOrWhiteSpace(grasshopper.Path)
+            )
+            {
+                continue;
+            }
+
+            if (DefinitionResolver.TryResolve(doc, grasshopper.Path, out _, out var pending, out _))
+            {
+                continue;
+            }
+
+            if (pending is null)
+            {
+                continue;
+            }
+
+            var key =
+                pending.Kind == PendingApprovalKind.RemoteLocation
+                    ? $"root:{pending.RemoteRoot}"
+                    : $"hash:{pending.Hash}";
+            pendingByKey[key] = pending;
+        }
+
+        return pendingByKey.Values.ToList();
+    }
+
+    /// <summary>
+    /// Records the user's approval of a pending definition and re-evaluates the stack.
+    /// </summary>
+    public void ApprovePending(RhinoDoc doc, Guid objectId, PendingApproval pending)
+    {
+        if (pending.Kind == PendingApprovalKind.RemoteLocation)
+        {
+            DefinitionPathPolicy.ApproveRemoteRoot(pending.RemoteRoot);
+            Log($"Network location approved. Root={pending.RemoteRoot}");
+        }
+        else
+        {
+            DefinitionTrust.Approve(pending.Hash, pending.Path, pending.Source);
+            Log(
+                $"Definition approved. Name={pending.DisplayName}, Source={pending.Source}, Hash={DefinitionTrust.ShortHash(pending.Hash)}"
+            );
+        }
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            RaiseStateChanged();
+            return;
+        }
+
+        // Drop cached runtimes so the newly approved definition is loaded from scratch.
+        _executor.ClearDefinitionCache();
+        ResetStackRuntime(doc, objectId, ModifierStackStorage.Load(rhinoObject));
     }
 
     private void BuildPanelRows(
@@ -293,11 +372,77 @@ internal sealed class ModifierEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Resolves a path the user chose themselves, prompting once if it lives on an unapproved
+    /// network share.
+    /// </summary>
+    /// <remarks>
+    /// Only call this from user-initiated entry points. Paths that arrive from an opened document
+    /// must go through <see cref="DefinitionPathPolicy"/> directly so that merely opening a file
+    /// can never raise a dialog, and never reaches the network on its own.
+    /// </remarks>
+    private static bool TryResolveUserChosenPath(
+        string path,
+        out string fullPath,
+        out string message
+    )
+    {
+        var verdict = DefinitionPathPolicy.Evaluate(
+            path,
+            out fullPath,
+            out var remoteRoot,
+            out message
+        );
+
+        if (verdict == DefinitionPathPolicy.PathVerdict.Allowed)
+        {
+            return true;
+        }
+
+        if (verdict != DefinitionPathPolicy.PathVerdict.RemoteNotApproved)
+        {
+            return false;
+        }
+
+        var answer = Dialogs.ShowMessage(
+            $"This modifier is on a network location:\n\n{remoteRoot}\n\n"
+                + "Opening files from a network share sends your Windows credentials to that "
+                + "server, and the definition can run code on this machine.\n\n"
+                + "Allow modifiers from this location?",
+            "Network location",
+            ShowMessageButton.YesNo,
+            ShowMessageIcon.Warning
+        );
+
+        if (answer != ShowMessageResult.Yes)
+        {
+            message = $"Network location was not approved: {remoteRoot}";
+            return false;
+        }
+
+        DefinitionPathPolicy.ApproveRemoteRoot(remoteRoot);
+
+        // Re-evaluate rather than trusting the first pass, so the approval and the returned path
+        // are produced by the same code path that guards everything else.
+        return DefinitionPathPolicy.Evaluate(path, out fullPath, out _, out message)
+            == DefinitionPathPolicy.PathVerdict.Allowed;
+    }
+
     public bool AddStep(RhinoDoc doc, Guid objectId, string path, out string message)
     {
         message = string.Empty;
         Log($"AddStep requested. Object={objectId}, Path={path}");
-        if (!File.Exists(path))
+
+        // User initiated, so a remote share may be approved interactively here. The evaluation
+        // and inspection paths deliberately never prompt.
+        if (!TryResolveUserChosenPath(path, out var resolvedPath, out var pathError))
+        {
+            message = pathError;
+            Log(message);
+            return false;
+        }
+
+        if (!File.Exists(resolvedPath))
         {
             message = $"Modifier file not found: {path}";
             Log(message);
@@ -323,7 +468,7 @@ internal sealed class ModifierEngine : IDisposable
         var stack = new ModifierStack(spec);
         if (
             !stack.TryAddNode(
-                new GrasshopperModifierSpec { Enabled = true, Path = Path.GetFullPath(path) },
+                new GrasshopperModifierSpec { Enabled = true, Path = resolvedPath },
                 null,
                 null,
                 out var addError
@@ -429,7 +574,15 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        if (!File.Exists(path))
+        // User initiated, so a remote share may be approved interactively here.
+        if (!TryResolveUserChosenPath(path, out var resolvedPath, out var pathError))
+        {
+            message = pathError;
+            Log(message);
+            return false;
+        }
+
+        if (!File.Exists(resolvedPath))
         {
             message = $"Modifier file not found: {path}";
             Log(message);
@@ -453,7 +606,7 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        grasshopper.Path = Path.GetFullPath(path);
+        grasshopper.Path = resolvedPath;
         if (!ModifierStackStorage.Save(doc, objectId, spec))
         {
             message = "Failed to update the modifier.";
@@ -577,11 +730,27 @@ internal sealed class ModifierEngine : IDisposable
             return false;
         }
 
-        var fullPath = Path.GetFullPath(path);
+        // Opening in Grasshopper loads and can solve the definition, so it needs the same gate.
+        if (!TryResolveUserChosenPath(path, out var fullPath, out var pathError))
+        {
+            message = pathError;
+            Log(message);
+            return false;
+        }
+
         Log($"OpenModifierDefinitionInGrasshopper requested. Path={fullPath}");
         if (!File.Exists(fullPath))
         {
             message = $"Modifier file not found: {fullPath}";
+            Log(message);
+            return false;
+        }
+
+        // Handing the file to Grasshopper loads and solves it, so the click alone is not enough:
+        // this path is reachable with a path that came out of an untrusted document.
+        if (!DefinitionResolver.TryResolve(null, fullPath, out _, out _, out var approvalError))
+        {
+            message = approvalError;
             Log(message);
             return false;
         }

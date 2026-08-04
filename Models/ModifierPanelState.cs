@@ -15,6 +15,13 @@ internal sealed class ModifierPanelState
 
     public IReadOnlyList<ModifierStepPanelState> Steps { get; init; } =
         Array.Empty<ModifierStepPanelState>();
+
+    /// <summary>
+    /// Definitions in this stack that will not run until the user approves them. Non-empty only
+    /// when a document carries definitions this machine has not vetted.
+    /// </summary>
+    public IReadOnlyList<Runtime.PendingApproval> PendingApprovals { get; init; } =
+        Array.Empty<Runtime.PendingApproval>();
 }
 
 internal sealed class ModifierStepPanelState

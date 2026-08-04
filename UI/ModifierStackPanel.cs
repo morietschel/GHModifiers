@@ -37,6 +37,7 @@ public sealed class ModifierStackPanel : Panel
     private const int MessageLabelHorizontalInset = 60;
 
     private readonly Label _statusLabel;
+    private readonly Panel _approvalBanner = new() { Visible = false };
     private readonly Scrollable _rowsScrollable;
     private readonly DropDown _definitionPicker;
     private readonly Button _addButton;
@@ -278,6 +279,7 @@ public sealed class ModifierStackPanel : Panel
                 new StackLayoutItem(actionRow, HorizontalAlignment.Stretch),
                 new StackLayoutItem(pickerRow, HorizontalAlignment.Stretch),
                 _statusLabel,
+                new StackLayoutItem(_approvalBanner, HorizontalAlignment.Stretch),
                 new StackLayoutItem(_rowsScrollable, expand: true)
                 {
                     HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -419,6 +421,8 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
+        // After SetModifierPath, so a network share has had its chance to be approved.
+        ApproveUserPickedDefinition(dialog.FileName);
         RememberImportedDefinitions(dialog.FileName);
 
         if (!string.IsNullOrWhiteSpace(setPathMessage))
@@ -726,6 +730,8 @@ public sealed class ModifierStackPanel : Panel
 
         _statusLabel.Visible = canEdit && !string.IsNullOrWhiteSpace(state.StatusMessage);
         _statusLabel.Text = state.StatusMessage;
+
+        UpdateApprovalBanner(state);
 
         var rows = new StackLayout
         {
@@ -1437,6 +1443,120 @@ public sealed class ModifierStackPanel : Panel
         );
     }
 
+    /// <summary>
+    /// Shows which definitions in this document are blocked, and lets the user allow them.
+    /// </summary>
+    /// <remarks>
+    /// Solving a Grasshopper definition runs any script components it contains, so a definition
+    /// carried by a document someone sent you is untrusted code. The banner names each one and its
+    /// content hash before anything runs, so the decision is informed rather than implicit.
+    /// </remarks>
+    private void UpdateApprovalBanner(ModifierPanelState state)
+    {
+        var pending = state.PendingApprovals;
+        if (pending.Count == 0 || !state.SelectedObjectId.HasValue)
+        {
+            _approvalBanner.Visible = false;
+            _approvalBanner.Content = null;
+            return;
+        }
+
+        var objectId = state.SelectedObjectId.Value;
+        var items = new StackLayout
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = ToolbarSpacing,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Padding(8),
+        };
+
+        items.Items.Add(
+            new Label
+            {
+                Text =
+                    pending.Count == 1
+                        ? "This document contains 1 modifier definition that has not been approved to run."
+                        : $"This document contains {pending.Count} modifier definitions that have not been approved to run.",
+                Wrap = WrapMode.Word,
+                TextColor = Colors.White,
+            }
+        );
+
+        foreach (var item in pending)
+        {
+            var description =
+                item.Kind == PendingApprovalKind.RemoteLocation
+                    ? $"{item.DisplayName} at {item.RemoteRoot}"
+                    : $"{item.DisplayName}";
+
+            var enableButton = new Button { Text = "Enable", ToolTip = item.Path };
+
+            // Capture the loop variable so each button approves its own definition.
+            var captured = item;
+            enableButton.Click += (_, _) =>
+            {
+                var doc = RhinoDoc.ActiveDoc;
+                if (doc is null)
+                {
+                    return;
+                }
+
+                RhinoModifiersPlugin.Instance.Engine.ApprovePending(doc, objectId, captured);
+                RefreshView();
+            };
+
+            items.Items.Add(
+                new StackLayoutItem(
+                    new StackLayout
+                    {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = ToolbarSpacing,
+                        VerticalContentAlignment = VerticalAlignment.Center,
+                        Items =
+                        {
+                            new StackLayoutItem(
+                                new Label
+                                {
+                                    Text = description,
+                                    Wrap = WrapMode.Word,
+                                    TextColor = Colors.White,
+                                    ToolTip = item.Path,
+                                },
+                                true
+                            ),
+                            enableButton,
+                        },
+                    },
+                    HorizontalAlignment.Stretch
+                )
+            );
+        }
+
+        _approvalBanner.BackgroundColor = Color.FromArgb(240, 90, 0);
+        _approvalBanner.Content = items;
+        _approvalBanner.Visible = true;
+    }
+
+    /// <summary>
+    /// Treats a definition the user browsed to and selected as approved to run.
+    /// </summary>
+    /// <remarks>
+    /// Navigating a file dialog to a specific file is an explicit act, so the normal authoring
+    /// flow never has to visit the approval banner. This is deliberately called only at the two
+    /// file-dialog sites and not inside the engine, because the engine's path-taking entry points
+    /// are also reachable with paths that came out of an untrusted document.
+    /// </remarks>
+    private static void ApproveUserPickedDefinition(string path)
+    {
+        // TryResolve fails for a network share whose root has not been approved, so a file on an
+        // unapproved share earns nothing here. Call this after the engine has run, since that is
+        // what prompts for the share root.
+        if (DefinitionPathPolicy.TryResolve(path, out var fullPath, out _))
+        {
+            DefinitionTrust.ApprovePath(fullPath);
+        }
+    }
+
     private void ImportScriptFromFile(Guid objectId, ModifierStepPanelState step)
     {
         var doc = RhinoDoc.ActiveDoc;
@@ -1474,6 +1594,8 @@ public sealed class ModifierStackPanel : Panel
             return;
         }
 
+        // After SetModifierPath, so a network share has had its chance to be approved.
+        ApproveUserPickedDefinition(dialog.FileName);
         RememberImportedDefinitions(dialog.FileName);
 
         if (!string.IsNullOrWhiteSpace(message))
