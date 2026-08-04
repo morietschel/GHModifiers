@@ -366,16 +366,23 @@ internal sealed class RuntimeExecutor : IDisposable
                 $"Modifier '{spec.Name}' has no Grasshopper definition to evaluate."
             );
 
-        // Vet the path before any filesystem call. A UNC path would otherwise leak the user's
-        // NTLMv2 credentials to the remote host on the File.Exists below.
-        if (!DefinitionPathPolicy.TryResolve(rawPath, out var fullPath, out var pathError))
+        // Vet the path, obtain the bytes, and check them against the approval store before any of
+        // this reaches Grasshopper. An unapproved definition throws here and never loads.
+        if (
+            !DefinitionResolver.TryResolve(
+                doc,
+                rawPath,
+                out var definition,
+                out var pending,
+                out var resolveError
+            )
+        )
         {
-            throw new InvalidOperationException(pathError);
+            throw new DefinitionNotApprovedException(resolveError, pending);
         }
 
-        var lastWriteUtc = File.Exists(fullPath)
-            ? File.GetLastWriteTimeUtc(fullPath)
-            : DateTime.MinValue;
+        var fullPath = definition.LoadPath;
+        var lastWriteUtc = definition.LastWriteUtc;
 
         var existing = runtime.StepRuntimes[index];
         if (
@@ -398,7 +405,7 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        var template = GetDefinitionTemplate(doc, fullPath, lastWriteUtc);
+        var template = GetDefinitionTemplate(definition);
         var document = GH_Document.DuplicateDocument(template.Document);
         Log($"Step {index} duplicated GH document. Modifier={Path.GetFileName(fullPath)}");
 
@@ -440,30 +447,15 @@ internal sealed class RuntimeExecutor : IDisposable
     /// <summary>
     /// Looks up or loads a Grasshopper definition template.
     /// </summary>
-    public DefinitionTemplate GetDefinitionTemplate(
-        RhinoDoc? doc,
-        string fullPath,
-        DateTime lastWriteUtc
-    )
+    /// <remarks>
+    /// Takes an already-resolved definition rather than a raw path. Resolution is where the
+    /// approval check lives, so requiring a <see cref="ResolvedDefinition"/> here makes it
+    /// impossible to reach the loader with an unvetted path.
+    /// </remarks>
+    public DefinitionTemplate GetDefinitionTemplate(ResolvedDefinition definition)
     {
-        var resolvedPath = fullPath;
-        var resolvedLastWrite = lastWriteUtc;
-
-        if (!File.Exists(resolvedPath))
-        {
-            if (
-                doc is not null
-                && EmbeddedDefinitionStorage.TryExtract(doc, resolvedPath, out var tempPath)
-            )
-            {
-                resolvedPath = tempPath;
-                resolvedLastWrite = File.GetLastWriteTimeUtc(resolvedPath);
-            }
-            else
-            {
-                throw new FileNotFoundException("Modifier file not found.", fullPath);
-            }
-        }
+        var resolvedPath = definition.LoadPath;
+        var resolvedLastWrite = definition.LastWriteUtc;
 
         if (
             _definitionCache.TryGetValue(resolvedPath, out var cached)
@@ -536,34 +528,25 @@ internal sealed class RuntimeExecutor : IDisposable
 
         try
         {
-            // Same gate as the evaluation path: nothing may touch the filesystem until the path
-            // is known to be a local (or user-approved remote) .gh/.ghx.
-            if (!DefinitionPathPolicy.TryResolve(path, out var fullPath, out var pathError))
-            {
-                error = pathError;
-                return false;
-            }
-
-            DateTime lastWriteUtc;
-            if (File.Exists(fullPath))
-            {
-                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
-            }
-            else if (
-                doc is not null
-                && EmbeddedDefinitionStorage.TryExtract(doc, fullPath, out var tempPath)
+            // The same gate as the evaluation path, and it must be here too: building a contract
+            // solves a copy of the definition to discover default input values, which runs its
+            // script components. Gating only evaluation would leave selecting an object as a
+            // working execution vector.
+            if (
+                !DefinitionResolver.TryResolve(
+                    doc,
+                    path,
+                    out var definition,
+                    out _,
+                    out var resolveError
+                )
             )
             {
-                fullPath = tempPath;
-                lastWriteUtc = File.GetLastWriteTimeUtc(fullPath);
-            }
-            else
-            {
-                error = $"Modifier file not found: {path}";
+                error = resolveError;
                 return false;
             }
 
-            contract = GetDefinitionTemplate(doc, fullPath, lastWriteUtc).Contract;
+            contract = GetDefinitionTemplate(definition).Contract;
             return true;
         }
         catch (Exception ex)
@@ -612,8 +595,11 @@ internal sealed class RuntimeExecutor : IDisposable
         return false;
     }
 
-    /// <inheritdoc/>
-    public void Dispose()
+    /// <summary>
+    /// Drops every cached definition template so the next evaluation reloads from source.
+    /// Used after an approval, since the previously blocked definition was never cached.
+    /// </summary>
+    public void ClearDefinitionCache()
     {
         foreach (var template in _definitionCache.Values)
         {
@@ -621,6 +607,12 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         _definitionCache.Clear();
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        ClearDefinitionCache();
     }
 
     private static GH_Document LoadDefinitionDocument(string fullPath)

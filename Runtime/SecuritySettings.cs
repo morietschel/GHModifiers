@@ -24,7 +24,9 @@ internal static class SecuritySettings
         {
             // Never let a settings failure become an implicit grant: callers treat an empty
             // value as "nothing approved".
-            RhinoApp.WriteLine($"[Modifiers] Failed to read security setting '{key}': {ex.Message}");
+            RhinoApp.WriteLine(
+                $"[Modifiers] Failed to read security setting '{key}': {ex.Message}"
+            );
             return string.Empty;
         }
     }

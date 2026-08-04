@@ -19,7 +19,7 @@ namespace RhinoModifiers.Runtime;
 /// only in the file dialogs, never on the load path.
 /// </item>
 /// <item>
-/// It must be local, or point at a remote share the user has explicitly approved. 
+/// It must be local, or point at a remote share the user has explicitly approved.
 /// Connecting to the remote location happens on the very first <see cref="File.Exists"/>,
 /// which is why this check runs before any I/O rather than at load time.
 /// </item>
@@ -200,7 +200,9 @@ internal static class DefinitionPathPolicy
         }
 
         return LoadApprovedRemoteRoots()
-            .Any(approved => string.Equals(approved, shareRoot, StringComparison.OrdinalIgnoreCase));
+            .Any(approved =>
+                string.Equals(approved, shareRoot, StringComparison.OrdinalIgnoreCase)
+            );
     }
 
     public static void ApproveRemoteRoot(string shareRoot)

@@ -141,7 +141,85 @@ internal sealed class ModifierEngine : IDisposable
             SelectionLabel = selectionLabel,
             StatusMessage = runtimeMessage,
             Steps = steps,
+            PendingApprovals = CollectPendingApprovals(doc, stack),
         };
+    }
+
+    /// <summary>
+    /// Lists the definitions in this stack that are waiting on the user before they may run.
+    /// </summary>
+    /// <remarks>
+    /// Resolution is side-effect free: it reads bytes to hash them but writes nothing and loads
+    /// nothing, so calling this while merely displaying the panel cannot execute a definition.
+    /// Entries are de-duplicated so a definition used by several steps is approved once.
+    /// </remarks>
+    private static IReadOnlyList<PendingApproval> CollectPendingApprovals(
+        RhinoDoc doc,
+        ModifierStack stack
+    )
+    {
+        var pendingByKey = new Dictionary<string, PendingApproval>(
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        foreach (var modifier in stack.Flatten())
+        {
+            if (
+                modifier is not GrasshopperModifierSpec grasshopper
+                || string.IsNullOrWhiteSpace(grasshopper.Path)
+            )
+            {
+                continue;
+            }
+
+            if (DefinitionResolver.TryResolve(doc, grasshopper.Path, out _, out var pending, out _))
+            {
+                continue;
+            }
+
+            if (pending is null)
+            {
+                continue;
+            }
+
+            var key =
+                pending.Kind == PendingApprovalKind.RemoteLocation
+                    ? $"root:{pending.RemoteRoot}"
+                    : $"hash:{pending.Hash}";
+            pendingByKey[key] = pending;
+        }
+
+        return pendingByKey.Values.ToList();
+    }
+
+    /// <summary>
+    /// Records the user's approval of a pending definition and re-evaluates the stack.
+    /// </summary>
+    public void ApprovePending(RhinoDoc doc, Guid objectId, PendingApproval pending)
+    {
+        if (pending.Kind == PendingApprovalKind.RemoteLocation)
+        {
+            DefinitionPathPolicy.ApproveRemoteRoot(pending.RemoteRoot);
+            Log($"Network location approved. Root={pending.RemoteRoot}");
+        }
+        else
+        {
+            DefinitionTrust.Approve(pending.Hash, pending.Path, pending.Source);
+            Log(
+                $"Definition approved. Name={pending.DisplayName}, Source={pending.Source}, Hash={DefinitionTrust.ShortHash(pending.Hash)}"
+            );
+        }
+
+        var rhinoObject = doc.Objects.FindId(objectId);
+        if (rhinoObject is null)
+        {
+            RaiseStateChanged();
+            return;
+        }
+
+        // Drop cached runtimes so the newly approved definition is loaded from scratch.
+        _executor.ClearDefinitionCache();
+        ResetStackRuntime(doc, objectId, ModifierStackStorage.Load(rhinoObject));
     }
 
     private void BuildPanelRows(
@@ -664,6 +742,15 @@ internal sealed class ModifierEngine : IDisposable
         if (!File.Exists(fullPath))
         {
             message = $"Modifier file not found: {fullPath}";
+            Log(message);
+            return false;
+        }
+
+        // Handing the file to Grasshopper loads and solves it, so the click alone is not enough:
+        // this path is reachable with a path that came out of an untrusted document.
+        if (!DefinitionResolver.TryResolve(null, fullPath, out _, out _, out var approvalError))
+        {
+            message = approvalError;
             Log(message);
             return false;
         }
