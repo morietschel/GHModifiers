@@ -360,11 +360,19 @@ internal sealed class RuntimeExecutor : IDisposable
         ModifierSpec spec
     )
     {
-        var fullPath = spec is GrasshopperModifierSpec grasshopper
-            ? Path.GetFullPath(grasshopper.Path)
+        var rawPath = spec is GrasshopperModifierSpec grasshopper
+            ? grasshopper.Path
             : throw new InvalidOperationException(
                 $"Modifier '{spec.Name}' has no Grasshopper definition to evaluate."
             );
+
+        // Vet the path before any filesystem call. A UNC path would otherwise leak the user's
+        // NTLMv2 credentials to the remote host on the File.Exists below.
+        if (!DefinitionPathPolicy.TryResolve(rawPath, out var fullPath, out var pathError))
+        {
+            throw new InvalidOperationException(pathError);
+        }
+
         var lastWriteUtc = File.Exists(fullPath)
             ? File.GetLastWriteTimeUtc(fullPath)
             : DateTime.MinValue;
@@ -528,7 +536,14 @@ internal sealed class RuntimeExecutor : IDisposable
 
         try
         {
-            var fullPath = Path.GetFullPath(path);
+            // Same gate as the evaluation path: nothing may touch the filesystem until the path
+            // is known to be a local (or user-approved remote) .gh/.ghx.
+            if (!DefinitionPathPolicy.TryResolve(path, out var fullPath, out var pathError))
+            {
+                error = pathError;
+                return false;
+            }
+
             DateTime lastWriteUtc;
             if (File.Exists(fullPath))
             {
