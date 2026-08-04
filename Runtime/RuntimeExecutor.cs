@@ -615,15 +615,19 @@ internal sealed class RuntimeExecutor : IDisposable
         ClearDefinitionCache();
     }
 
+    /// <summary>
+    /// The user's answer to the missing-plugin download prompt, remembered for this Rhino
+    /// session so a stack of several definitions does not ask repeatedly.
+    /// </summary>
+    private static bool? _allowPluginDownloadThisSession;
+
     private static GH_Document LoadDefinitionDocument(string fullPath)
     {
-        // Suppress missing plugin warnings by trying to auto load any missing plugins.
-        bool originalTryDownloadMissingPlugins = Grasshopper
-            .CentralSettings
-            .TryDownloadMissingPlugins;
-        Grasshopper.CentralSettings.TryDownloadMissingPlugins = true;
-
         var archive = new GH_Archive();
+
+        // Read with the user's own auto-download preference untouched. Forcing it on here would
+        // let the definition decide which third-party assemblies get fetched and loaded into
+        // this process.
         if (!archive.ReadFromFile(fullPath))
         {
             throw new InvalidOperationException(
@@ -631,7 +635,28 @@ internal sealed class RuntimeExecutor : IDisposable
             );
         }
 
-        Grasshopper.CentralSettings.TryDownloadMissingPlugins = originalTryDownloadMissingPlugins;
+        var missingCount = CountUnresolvedComponents(archive);
+        if (missingCount > 0 && ShouldDownloadMissingPlugins(fullPath, missingCount))
+        {
+            bool original = Grasshopper.CentralSettings.TryDownloadMissingPlugins;
+            try
+            {
+                Grasshopper.CentralSettings.TryDownloadMissingPlugins = true;
+
+                // Re-read so the resolution happens with downloads permitted.
+                var retry = new GH_Archive();
+                if (retry.ReadFromFile(fullPath))
+                {
+                    archive = retry;
+                }
+            }
+            finally
+            {
+                // Restored in a finally so no failure path can leave auto-download enabled for
+                // the rest of the session.
+                Grasshopper.CentralSettings.TryDownloadMissingPlugins = original;
+            }
+        }
 
         var document = new GH_Document();
         if (!archive.ExtractObject(document, "Definition"))
@@ -643,6 +668,77 @@ internal sealed class RuntimeExecutor : IDisposable
         }
 
         return document;
+    }
+
+    /// <summary>
+    /// Counts components in the archive that this Rhino cannot resolve to an installed plug-in.
+    /// </summary>
+    /// <remarks>
+    /// Returns 0 when the archive cannot be inspected. That is deliberate: the count only decides
+    /// whether to <em>offer</em> a download, so an inconclusive read fails closed and nothing is
+    /// fetched.
+    /// </remarks>
+    private static int CountUnresolvedComponents(GH_Archive archive)
+    {
+        try
+        {
+            var objects = archive
+                .GetRootNode?.FindChunk("Definition")
+                ?.FindChunk("DefinitionObjects");
+            if (objects is null)
+            {
+                return 0;
+            }
+
+            var count = objects.GetInt32("ObjectCount");
+            var missing = 0;
+            for (var i = 0; i < count; i++)
+            {
+                var objectChunk = objects.FindChunk("Object", i);
+                if (objectChunk is null)
+                {
+                    continue;
+                }
+
+                var componentGuid = objectChunk.GetGuid("GUID");
+                if (Grasshopper.Instances.ComponentServer.EmitObjectProxy(componentGuid) is null)
+                {
+                    missing++;
+                }
+            }
+
+            return missing;
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not inspect definition for missing plug-ins. {ex.Message}");
+            return 0;
+        }
+    }
+
+    private static bool ShouldDownloadMissingPlugins(string fullPath, int missingCount)
+    {
+        if (_allowPluginDownloadThisSession.HasValue)
+        {
+            return _allowPluginDownloadThisSession.Value;
+        }
+
+        var answer = Rhino.UI.Dialogs.ShowMessage(
+            $"'{Path.GetFileName(fullPath)}' uses {missingCount} component(s) from Grasshopper "
+                + "plug-ins that are not installed.\n\n"
+                + "Downloading them installs third-party code from the Grasshopper package "
+                + "server and loads it into Rhino.\n\n"
+                + "Download the missing plug-ins?",
+            "Missing Grasshopper plug-ins",
+            Rhino.UI.ShowMessageButton.YesNo,
+            Rhino.UI.ShowMessageIcon.Warning
+        );
+
+        _allowPluginDownloadThisSession = answer == Rhino.UI.ShowMessageResult.Yes;
+        Log(
+            $"Missing plug-in download {(_allowPluginDownloadThisSession.Value ? "allowed" : "declined")} for this session."
+        );
+        return _allowPluginDownloadThisSession.Value;
     }
 
     /// <summary>

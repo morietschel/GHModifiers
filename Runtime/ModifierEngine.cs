@@ -1485,7 +1485,10 @@ internal sealed class ModifierEngine : IDisposable
 
         if (paths.Count == 0)
         {
-            message = "No modifier definitions to embed.";
+            message =
+                skipped.Count > 0
+                    ? $"No approved modifier definitions to embed. Skipped {skipped.Count} unapproved path(s)."
+                    : "No modifier definitions to embed.";
             return false;
         }
 
